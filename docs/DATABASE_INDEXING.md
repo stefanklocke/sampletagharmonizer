@@ -9,7 +9,7 @@ of this foundation.
 ```mermaid
 flowchart LR
     nas["NAS dataset<br/>WAV files"]
-    cli["sampletagharmonizer index"]
+    cli["sth index"]
     wav["WAV parser<br/>fmt + data chunk"]
     hash["SHA-256 over data chunk"]
     db["PostgreSQL"]
@@ -89,13 +89,13 @@ docker compose up -d db
 Initialize tables:
 
 ```bash
-sampletagharmonizer init-db
+sth init-db
 ```
 
 Index a small subset first:
 
 ```bash
-sampletagharmonizer index --limit 100
+sth index --limit 100
 ```
 
 Or without installing the package:
@@ -113,6 +113,26 @@ Example:
 DATABASE_URL=postgresql+psycopg://sampletagharmonizer:sampletagharmonizer@localhost:5432/sampletagharmonizer
 ```
 
+## Retrying Failed Files
+
+Every indexing run creates a `scan_runs` row. Per-file failures are stored in
+`scan_errors`. After parser fixes, re-index only the failed files from a previous
+run:
+
+```bash
+sth retry-errors <scan_run_id>
+```
+
+If no scan run ID is provided, the command retries the latest run with errors:
+
+```bash
+sth retry-errors
+```
+
+The retry creates a new `scan_runs` row whose `dataset_path` is prefixed with
+`retry-errors:`. Existing `file_instances` are updated in place when a previously
+failed file is successfully indexed.
+
 ## Current Scope
 
 The indexer currently stores:
@@ -124,3 +144,15 @@ The indexer currently stores:
 
 It does not yet store NI tags, MessagePack payloads, category paths, or derived tag
 tables. Those belong to the next phase after the file index is reliable.
+
+## WAV Parser Tolerance
+
+The audio indexer hashes the WAV `data` chunk and intentionally avoids depending on
+later metadata chunks. It currently tolerates several NI WAV variants observed in
+the dataset:
+
+1. A single physical padding byte after the RIFF-declared end.
+2. Missing padding after an odd-sized chunk when the next bytes already form a
+   valid RIFF chunk header.
+3. A `data` chunk that extends past an incorrect RIFF-declared end, as long as the
+   declared `data` payload fits within the actual file size.

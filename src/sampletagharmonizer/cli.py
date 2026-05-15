@@ -3,16 +3,12 @@ from __future__ import annotations
 import argparse
 import json
 import sys
-import time
 from pathlib import Path
-from typing import Iterable
 
+from .cli_progress import ProgressBar
 from .config import dataset_path_from_env
 from .parsers.ni_metadata import inspect_wav
-
-
-def iter_wav_files(root: Path) -> Iterable[Path]:
-    yield from root.rglob("*.wav")
+from .services.files import iter_wav_files
 
 
 def scan(args: argparse.Namespace) -> int:
@@ -96,41 +92,22 @@ def index(args: argparse.Namespace) -> int:
 
 
 def retry_errors(args: argparse.Namespace) -> int:
-    from sqlalchemy import select
-
     from .config import database_url_from_env
-    from .db.models import ScanError
     from .db.session import session_scope
-    from .services.indexer import index_paths
+    from .services.indexer import error_paths_for_scan_run, latest_error_scan_run_id, retry_error_paths
 
     database_url = args.database_url or database_url_from_env(args.env)
     with session_scope(database_url, args.env) as session:
-        source_scan_run_id = args.scan_run_id or _latest_error_scan_run_id(session)
+        source_scan_run_id = args.scan_run_id or latest_error_scan_run_id(session)
         if source_scan_run_id is None:
             raise SystemExit("No scan run with errors found.")
 
-        paths = [
-            Path(path)
-            for path in session.scalars(
-                select(ScanError.path)
-                .where(ScanError.scan_run_id == source_scan_run_id)
-                .distinct()
-                .order_by(ScanError.path)
-            )
-        ]
-        if args.limit is not None:
-            paths = paths[: args.limit]
-
-        progress = None if args.no_progress else ProgressBar(len(paths))
+        total = len(error_paths_for_scan_run(session, source_scan_run_id, args.limit))
+        progress = None if args.no_progress else ProgressBar(total)
         if progress is not None:
             progress.render(0, 0, 0)
 
-        result = index_paths(
-            session=session,
-            paths=paths,
-            dataset_path=f"retry-errors:{source_scan_run_id}",
-            progress=progress,
-        )
+        result = retry_error_paths(session, source_scan_run_id, args.limit, progress)
 
     if progress is not None:
         progress.finish(result.scanned_files, result.indexed_files, result.error_count)
@@ -147,64 +124,6 @@ def retry_errors(args: argparse.Namespace) -> int:
         )
     )
     return 0
-
-
-def _latest_error_scan_run_id(session) -> str | None:
-    from sqlalchemy import desc, select
-
-    from .db.models import ScanRun
-
-    return session.scalar(
-        select(ScanRun.id)
-        .where(ScanRun.error_count > 0)
-        .order_by(desc(ScanRun.started_at))
-        .limit(1)
-    )
-
-
-class ProgressBar:
-    def __init__(self, total: int, width: int = 32) -> None:
-        self.total = max(total, 0)
-        self.width = width
-        self.started_at = time.monotonic()
-        self.last_rendered_at = 0.0
-
-    def __call__(self, scanned: int, indexed: int, errors: int) -> None:
-        now = time.monotonic()
-        if scanned < self.total and now - self.last_rendered_at < 0.2:
-            return
-        self.render(scanned, indexed, errors)
-
-    def render(self, scanned: int, indexed: int, errors: int) -> None:
-        self.last_rendered_at = time.monotonic()
-        elapsed = max(self.last_rendered_at - self.started_at, 0.001)
-        rate = scanned / elapsed
-        percent = scanned / self.total if self.total else 0
-        filled = min(self.width, int(self.width * percent)) if self.total else 0
-        bar = "#" * filled + "-" * (self.width - filled)
-        eta = _format_duration((self.total - scanned) / rate) if rate and self.total else "--:--"
-        line = (
-            f"\r[{bar}] {percent:6.2%} "
-            f"{scanned}/{self.total} scanned | "
-            f"{indexed} indexed | {errors} errors | "
-            f"{rate:5.1f}/s | ETA {eta}"
-        )
-        sys.stderr.write(line)
-        sys.stderr.flush()
-
-    def finish(self, scanned: int, indexed: int, errors: int) -> None:
-        self.render(scanned, indexed, errors)
-        sys.stderr.write("\n")
-        sys.stderr.flush()
-
-
-def _format_duration(seconds: float) -> str:
-    seconds = max(int(seconds), 0)
-    minutes, secs = divmod(seconds, 60)
-    hours, minutes = divmod(minutes, 60)
-    if hours:
-        return f"{hours:d}:{minutes:02d}:{secs:02d}"
-    return f"{minutes:02d}:{secs:02d}"
 
 
 def build_parser() -> argparse.ArgumentParser:

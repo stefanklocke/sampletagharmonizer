@@ -71,7 +71,10 @@ Observed chunk IDs include:
 | `cue ` | Cue points |
 | `LGWV` | Observed proprietary/vendor-specific waveform data |
 
-The scanner intentionally skips reading the `data` chunk into memory.
+The metadata scanner intentionally skips reading the `data` chunk into memory. The
+database indexer streams that chunk through SHA-256 and returns as soon as `fmt `
+and `data` have been read, so exotic metadata chunks after the audio payload do
+not block audio-content indexing.
 
 ## ID3 Layer
 

@@ -5,12 +5,13 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Callable, Iterable
 
-from sqlalchemy import select
+from sqlalchemy import desc, select
 from sqlalchemy.orm import Session
 
 from sampletagharmonizer import __version__
 from sampletagharmonizer.db.models import AudioAsset, FileInstance, ScanError, ScanRun
 from sampletagharmonizer.parsers.wav import WavAudioIdentity, inspect_audio_identity
+from sampletagharmonizer.services.files import iter_wav_files
 
 
 @dataclass(frozen=True)
@@ -22,10 +23,6 @@ class IndexResult:
 
 
 ProgressCallback = Callable[[int, int, int], None]
-
-
-def iter_wav_files(root: Path) -> Iterable[Path]:
-    yield from root.rglob("*.wav")
 
 
 def count_wav_files(root: Path, limit: int | None = None) -> int:
@@ -98,6 +95,42 @@ def index_paths(
         scan_run.indexed_files = indexed
         scan_run.error_count = errors
         scan_run.finished_at = datetime.now(UTC)
+
+
+def latest_error_scan_run_id(session: Session) -> str | None:
+    return session.scalar(
+        select(ScanRun.id)
+        .where(ScanRun.error_count > 0)
+        .order_by(desc(ScanRun.started_at))
+        .limit(1)
+    )
+
+
+def error_paths_for_scan_run(session: Session, scan_run_id: str, limit: int | None = None) -> list[Path]:
+    paths = [
+        Path(path)
+        for path in session.scalars(
+            select(ScanError.path)
+            .where(ScanError.scan_run_id == scan_run_id)
+            .distinct()
+            .order_by(ScanError.path)
+        )
+    ]
+    return paths[:limit] if limit is not None else paths
+
+
+def retry_error_paths(
+    session: Session,
+    source_scan_run_id: str,
+    limit: int | None = None,
+    progress: ProgressCallback | None = None,
+) -> IndexResult:
+    return index_paths(
+        session=session,
+        paths=error_paths_for_scan_run(session, source_scan_run_id, limit),
+        dataset_path=f"retry-errors:{source_scan_run_id}",
+        progress=progress,
+    )
 
 
 def upsert_file_instance(
