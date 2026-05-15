@@ -32,23 +32,24 @@ def iter_riff_chunks(path: Path, read_data_limit: int = 2_000_000) -> list[RiffC
         header = handle.read(12)
         if len(header) < 12 or header[:4] != b"RIFF" or header[8:12] != b"WAVE":
             raise ValueError("not a RIFF/WAVE file")
+        riff_end, actual_end = _riff_bounds(path, header)
 
-        while True:
+        while handle.tell() + 8 <= riff_end:
             offset = handle.tell()
             chunk_header = handle.read(8)
-            if not chunk_header:
-                break
-            if len(chunk_header) != 8:
-                raise ValueError(f"truncated chunk header at byte {offset}")
 
             raw_id, raw_size = chunk_header[:4], chunk_header[4:8]
             chunk_id = raw_id.decode("ascii", errors="replace")
             size = int.from_bytes(raw_size, "little")
-            data = handle.read(size) if size <= read_data_limit and chunk_id != "data" else None
+            payload_end = handle.tell() + size
+            if payload_end > riff_end and not _can_extend_to_actual_end(chunk_id, payload_end, actual_end):
+                raise ValueError(f"truncated chunk payload at byte {offset}")
+
+            should_read = size <= read_data_limit and chunk_id != "data"
+            data = handle.read(size) if should_read else None
             if data is None:
                 handle.seek(size, 1)
-            if size % 2:
-                handle.seek(1, 1)
+            _advance_after_payload(handle, size, riff_end, actual_end)
 
             chunks.append(RiffChunk(chunk_id=chunk_id, offset=offset, size=size, data=data))
     return chunks
@@ -63,27 +64,30 @@ def inspect_audio_identity(path: Path, buffer_size: int = 1024 * 1024) -> WavAud
         header = handle.read(12)
         if len(header) < 12 or header[:4] != b"RIFF" or header[8:12] != b"WAVE":
             raise ValueError("not a RIFF/WAVE file")
+        riff_end, actual_end = _riff_bounds(path, header)
 
-        while True:
+        while handle.tell() + 8 <= riff_end:
+            offset = handle.tell()
             chunk_header = handle.read(8)
-            if not chunk_header:
-                break
-            if len(chunk_header) != 8:
-                raise ValueError(f"truncated chunk header at byte {handle.tell() - len(chunk_header)}")
 
             chunk_id = chunk_header[:4].decode("ascii", errors="replace")
             size = int.from_bytes(chunk_header[4:8], "little")
+            payload_end = handle.tell() + size
+            if payload_end > riff_end and not _can_extend_to_actual_end(chunk_id, payload_end, actual_end):
+                raise ValueError(f"truncated chunk payload at byte {offset}")
+
             if chunk_id == "fmt ":
                 fmt_data = handle.read(size)
             elif chunk_id == "data":
                 data_hash = hashlib.sha256()
                 data_size = size
                 _hash_stream(handle, size, data_hash, buffer_size)
+                if fmt_data is not None:
+                    break
             else:
                 handle.seek(size, 1)
 
-            if size % 2:
-                handle.seek(1, 1)
+            _advance_after_payload(handle, size, riff_end, actual_end)
 
     if data_hash is None or data_size is None:
         raise ValueError("WAV file has no data chunk")
@@ -104,6 +108,50 @@ def _hash_stream(handle: BinaryIO, size: int, digest: hashlib._Hash, buffer_size
             raise ValueError("truncated data chunk")
         digest.update(chunk)
         remaining -= len(chunk)
+
+
+def _advance_after_payload(handle: BinaryIO, size: int, riff_end: int, actual_end: int) -> None:
+    if size % 2 == 0 or handle.tell() >= actual_end:
+        return
+
+    pos = handle.tell()
+    if _looks_like_chunk_header_at(handle, pos, riff_end):
+        return
+    if pos < actual_end:
+        handle.seek(1, 1)
+
+
+def _can_extend_to_actual_end(chunk_id: str, payload_end: int, actual_end: int) -> bool:
+    return chunk_id == "data" and payload_end <= actual_end
+
+
+def _looks_like_chunk_header_at(handle: BinaryIO, offset: int, riff_end: int) -> bool:
+    if offset + 8 > riff_end:
+        return False
+
+    original = handle.tell()
+    try:
+        handle.seek(offset)
+        header = handle.read(8)
+    finally:
+        handle.seek(original)
+
+    if len(header) != 8:
+        return False
+    chunk_id = header[:4]
+    if not all(32 <= byte <= 126 for byte in chunk_id):
+        return False
+    size = int.from_bytes(header[4:8], "little")
+    return offset + 8 + size <= riff_end
+
+
+def _riff_bounds(path: Path, header: bytes) -> tuple[int, int]:
+    riff_size = int.from_bytes(header[4:8], "little")
+    declared_end = 8 + riff_size
+    actual_end = path.stat().st_size
+    if actual_end == declared_end + 1:
+        return actual_end, actual_end
+    return min(declared_end, actual_end), actual_end
 
 
 def _parse_fmt_chunk(data: bytes | None) -> dict[str, int | None]:

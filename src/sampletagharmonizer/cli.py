@@ -95,6 +95,73 @@ def index(args: argparse.Namespace) -> int:
     return 0
 
 
+def retry_errors(args: argparse.Namespace) -> int:
+    from sqlalchemy import select
+
+    from .config import database_url_from_env
+    from .db.models import ScanError
+    from .db.session import session_scope
+    from .services.indexer import index_paths
+
+    database_url = args.database_url or database_url_from_env(args.env)
+    with session_scope(database_url, args.env) as session:
+        source_scan_run_id = args.scan_run_id or _latest_error_scan_run_id(session)
+        if source_scan_run_id is None:
+            raise SystemExit("No scan run with errors found.")
+
+        paths = [
+            Path(path)
+            for path in session.scalars(
+                select(ScanError.path)
+                .where(ScanError.scan_run_id == source_scan_run_id)
+                .distinct()
+                .order_by(ScanError.path)
+            )
+        ]
+        if args.limit is not None:
+            paths = paths[: args.limit]
+
+        progress = None if args.no_progress else ProgressBar(len(paths))
+        if progress is not None:
+            progress.render(0, 0, 0)
+
+        result = index_paths(
+            session=session,
+            paths=paths,
+            dataset_path=f"retry-errors:{source_scan_run_id}",
+            progress=progress,
+        )
+
+    if progress is not None:
+        progress.finish(result.scanned_files, result.indexed_files, result.error_count)
+    print(
+        json.dumps(
+            {
+                "source_scan_run_id": source_scan_run_id,
+                "scan_run_id": result.scan_run_id,
+                "scanned_files": result.scanned_files,
+                "indexed_files": result.indexed_files,
+                "error_count": result.error_count,
+            },
+            indent=2,
+        )
+    )
+    return 0
+
+
+def _latest_error_scan_run_id(session) -> str | None:
+    from sqlalchemy import desc, select
+
+    from .db.models import ScanRun
+
+    return session.scalar(
+        select(ScanRun.id)
+        .where(ScanRun.error_count > 0)
+        .order_by(desc(ScanRun.started_at))
+        .limit(1)
+    )
+
+
 class ProgressBar:
     def __init__(self, total: int, width: int = 32) -> None:
         self.total = max(total, 0)
@@ -156,6 +223,14 @@ def build_parser() -> argparse.ArgumentParser:
     index_parser.add_argument("--limit", type=int, help="Maximum number of WAV files to inspect.")
     index_parser.add_argument("--no-progress", action="store_true", help="Disable the console progress bar.")
     index_parser.set_defaults(func=index)
+
+    retry_parser = subparsers.add_parser("retry-errors", help="Re-index files from a previous scan run's errors.")
+    retry_parser.add_argument("scan_run_id", nargs="?", help="Scan run to retry. Defaults to the latest run with errors.")
+    retry_parser.add_argument("--env", type=Path, default=Path(".env"), help="Dotenv file containing DATABASE_URL.")
+    retry_parser.add_argument("--database-url", help="SQLAlchemy database URL. Overrides DATABASE_URL.")
+    retry_parser.add_argument("--limit", type=int, help="Maximum number of errored files to retry.")
+    retry_parser.add_argument("--no-progress", action="store_true", help="Disable the console progress bar.")
+    retry_parser.set_defaults(func=retry_errors)
 
     scan_parser = subparsers.add_parser("scan", help="Read-only scan for NI metadata in WAV files.")
     scan_parser.add_argument("path", nargs="?", type=Path, help="Dataset root. Defaults to DATASET_PATH_NI from .env.")

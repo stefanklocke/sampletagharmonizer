@@ -48,7 +48,17 @@ def index_dataset(
     if not root.is_dir():
         raise ValueError(f"Dataset path is not a directory: {root}")
 
-    scan_run = ScanRun(dataset_path=str(root), scanner_version=__version__)
+    return index_paths(session, iter_wav_files(root), str(root), limit, progress)
+
+
+def index_paths(
+    session: Session,
+    paths: Iterable[Path],
+    dataset_path: str,
+    limit: int | None = None,
+    progress: ProgressCallback | None = None,
+) -> IndexResult:
+    scan_run = ScanRun(dataset_path=dataset_path, scanner_version=__version__)
     session.add(scan_run)
     session.flush()
 
@@ -56,7 +66,7 @@ def index_dataset(
     indexed = 0
     errors = 0
     try:
-        for wav_path in iter_wav_files(root):
+        for wav_path in paths:
             if limit is not None and scanned >= limit:
                 break
             scanned += 1
