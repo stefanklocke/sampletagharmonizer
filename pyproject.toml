@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "sampletagharmonizer"
+version = "0.1.0"
+description = "Read-only analysis tools for Native Instruments WAV sample metadata."
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi>=0.115",
+    "psycopg[binary]>=3.2",
+    "sqlalchemy>=2.0",
+    "uvicorn[standard]>=0.34",
+]
+
+[project.scripts]
+sampletagharmonizer = "sampletagharmonizer.cli:main"
+sth = "sampletagharmonizer.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]

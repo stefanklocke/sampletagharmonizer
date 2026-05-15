@@ -3,6 +3,7 @@ comm==0.2.3
 debugpy==1.8.20
 decorator==5.2.1
 executing==2.2.1
+fastapi>=0.115
 ipykernel==7.2.0
 ipython==9.13.0
 ipython_pygments_lexers==1.1.1
@@ -18,6 +19,7 @@ parso==0.8.7
 pexpect==4.9.0
 platformdirs==4.9.6
 prompt_toolkit==3.0.52
+psycopg[binary]>=3.2
 psutil==7.2.2
 ptyprocess==0.7.0
 pure_eval==0.2.3
@@ -25,7 +27,9 @@ Pygments==2.20.0
 python-dateutil==2.9.0.post0
 pyzmq==27.1.0
 six==1.17.0
+sqlalchemy>=2.0
 stack-data==0.6.3
 tornado==6.5.5
 traitlets==5.15.0
+uvicorn[standard]>=0.34
 wcwidth==0.7.0
