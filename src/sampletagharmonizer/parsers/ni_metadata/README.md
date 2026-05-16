@@ -249,12 +249,20 @@ files[]
       mime
       object_id
       payload_size
+      source_chunk_id
+      source_chunk_offset
+      source_frame_id
+      source_frame_offset
+      source_payload_offset
+      source_payload_size
       summary
       utf16le_strings[]
   ni_soundinfo[]
   msgpack_candidates[]
     chunk_id
     chunk_offset
+    frame_id
+    frame_offset
     offset
     consumed
     value
