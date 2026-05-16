@@ -7,10 +7,14 @@ from pathlib import Path
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
 
-from sampletagharmonizer.db.models import AudioAsset, Base, FileInstance, MetadataObservation
+from sampletagharmonizer.db.models import AudioAsset, Base, FileInstance, MetadataObservation, ScanError, ScanRun
 from sampletagharmonizer.metadata import SOURCE_NI_SOUNDINFO_UTF16
 from sampletagharmonizer.parsers.ni_metadata import NI_SOUNDINFO_MIME
-from sampletagharmonizer.services.metadata_observer import extract_metadata_from_file_instances
+from sampletagharmonizer.services.metadata_observer import (
+    extract_metadata_from_file_instances,
+    latest_metadata_error_scan_run_id,
+    metadata_error_file_instances_for_scan_run,
+)
 
 
 def riff_chunk(chunk_id: bytes, payload: bytes) -> bytes:
@@ -128,6 +132,34 @@ class MetadataObserverTest(unittest.TestCase):
             self.assertEqual(observation.product, "Factory Library")
             self.assertEqual(observation.category_paths, [["Drums", "Kick"]])
             self.assertEqual(observation.attributes, {"color": "Bright"})
+
+    def test_finds_metadata_error_file_instances_for_retry(self) -> None:
+        engine = create_engine("sqlite+pysqlite:///:memory:", future=True)
+        Base.metadata.create_all(engine)
+        with Session(engine) as session:
+            asset = AudioAsset(data_sha256="0" * 64, data_size=4)
+            file_instance = FileInstance(
+                audio_asset=asset,
+                path="/samples/error.wav",
+                file_name="error.wav",
+                suffix=".wav",
+                file_size=4,
+                mtime_ns=1,
+            )
+            scan_run = ScanRun(
+                dataset_path="metadata-observations:indexed-files",
+                scanner_version="test",
+                error_count=1,
+            )
+            session.add_all([file_instance, scan_run])
+            session.flush()
+            session.add(ScanError(scan_run=scan_run, path=file_instance.path, error="boom"))
+            session.commit()
+
+            self.assertEqual(latest_metadata_error_scan_run_id(session), scan_run.id)
+            retry_files = metadata_error_file_instances_for_scan_run(session, scan_run.id)
+
+        self.assertEqual([item.path for item in retry_files], ["/samples/error.wav"])
 
 
 if __name__ == "__main__":

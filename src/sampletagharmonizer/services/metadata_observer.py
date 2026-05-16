@@ -5,7 +5,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Callable, Iterable
 
-from sqlalchemy import delete, select
+from sqlalchemy import delete, desc, or_, select
 from sqlalchemy.orm import Session
 
 from sampletagharmonizer import __version__
@@ -45,6 +45,65 @@ def extract_metadata_from_index(
         file_instances=_iter_indexed_file_instances(session),
         dataset_path="metadata-observations:indexed-files",
         limit=limit,
+        progress=progress,
+    )
+
+
+def latest_metadata_error_scan_run_id(session: Session) -> str | None:
+    return session.scalar(
+        select(ScanRun.id)
+        .where(ScanRun.error_count > 0)
+        .where(
+            or_(
+                ScanRun.dataset_path.like("metadata-observations:%"),
+                ScanRun.dataset_path.like("metadata-retry-errors:%"),
+            )
+        )
+        .order_by(desc(ScanRun.started_at))
+        .limit(1)
+    )
+
+
+def metadata_error_file_instances_for_scan_run(
+    session: Session,
+    scan_run_id: str,
+    limit: int | None = None,
+) -> list[FileInstance]:
+    paths = [
+        path
+        for path in session.scalars(
+            select(ScanError.path)
+            .where(ScanError.scan_run_id == scan_run_id)
+            .distinct()
+            .order_by(ScanError.path)
+        )
+    ]
+    if limit is not None:
+        paths = paths[:limit]
+    if not paths:
+        return []
+
+    file_instances = list(
+        session.scalars(
+            select(FileInstance)
+            .where(FileInstance.path.in_(paths))
+            .order_by(FileInstance.path)
+        )
+    )
+    by_path = {file_instance.path: file_instance for file_instance in file_instances}
+    return [by_path[path] for path in paths if path in by_path]
+
+
+def retry_metadata_errors(
+    session: Session,
+    source_scan_run_id: str,
+    limit: int | None = None,
+    progress: ProgressCallback | None = None,
+) -> MetadataExtractionResult:
+    return extract_metadata_from_file_instances(
+        session=session,
+        file_instances=metadata_error_file_instances_for_scan_run(session, source_scan_run_id, limit),
+        dataset_path=f"metadata-retry-errors:{source_scan_run_id}",
         progress=progress,
     )
 

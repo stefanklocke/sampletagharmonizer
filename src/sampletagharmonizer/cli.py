@@ -158,6 +158,47 @@ def extract_metadata(args: argparse.Namespace) -> int:
     return 0
 
 
+def retry_metadata_errors(args: argparse.Namespace) -> int:
+    from .config import database_url_from_env
+    from .db.session import session_scope
+    from .services.metadata_observer import (
+        latest_metadata_error_scan_run_id,
+        metadata_error_file_instances_for_scan_run,
+        retry_metadata_errors as retry_metadata_error_file_instances,
+    )
+
+    database_url = args.database_url or database_url_from_env(args.env)
+    progress = None
+    with session_scope(database_url, args.env) as session:
+        source_scan_run_id = args.scan_run_id or latest_metadata_error_scan_run_id(session)
+        if source_scan_run_id is None:
+            raise SystemExit("No metadata extraction scan run with errors found.")
+
+        total = len(metadata_error_file_instances_for_scan_run(session, source_scan_run_id, args.limit))
+        if not args.no_progress:
+            progress = ProgressBar(total, success_label="observations")
+            progress.render(0, 0, 0)
+
+        result = retry_metadata_error_file_instances(session, source_scan_run_id, args.limit, progress)
+
+    if progress is not None:
+        progress.finish(result.scanned_files, result.observation_count, result.error_count)
+    print(
+        json.dumps(
+            {
+                "source_scan_run_id": source_scan_run_id,
+                "scan_run_id": result.scan_run_id,
+                "scanned_files": result.scanned_files,
+                "observed_files": result.observed_files,
+                "observation_count": result.observation_count,
+                "error_count": result.error_count,
+            },
+            indent=2,
+        )
+    )
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="sampletagharmonizer")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -192,6 +233,17 @@ def build_parser() -> argparse.ArgumentParser:
     metadata_parser.add_argument("--limit", type=int, help="Maximum number of indexed files to inspect.")
     metadata_parser.add_argument("--no-progress", action="store_true", help="Disable the console progress bar.")
     metadata_parser.set_defaults(func=extract_metadata)
+
+    retry_metadata_parser = subparsers.add_parser(
+        "retry-metadata-errors",
+        help="Re-extract metadata for files from a previous metadata extraction run's errors.",
+    )
+    retry_metadata_parser.add_argument("scan_run_id", nargs="?", help="Scan run to retry. Defaults to the latest metadata extraction run with errors.")
+    retry_metadata_parser.add_argument("--env", type=Path, default=Path(".env"), help="Dotenv file containing DATABASE_URL.")
+    retry_metadata_parser.add_argument("--database-url", help="SQLAlchemy database URL. Overrides DATABASE_URL.")
+    retry_metadata_parser.add_argument("--limit", type=int, help="Maximum number of errored files to retry.")
+    retry_metadata_parser.add_argument("--no-progress", action="store_true", help="Disable the console progress bar.")
+    retry_metadata_parser.set_defaults(func=retry_metadata_errors)
 
     scan_parser = subparsers.add_parser("scan", help="Read-only scan for NI metadata in WAV files.")
     scan_parser.add_argument("path", nargs="?", type=Path, help="Dataset root. Defaults to DATASET_PATH_NI from .env.")
