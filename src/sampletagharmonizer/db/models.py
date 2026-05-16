@@ -39,6 +39,7 @@ class ScanRun(Base):
     file_instances: Mapped[list[FileInstance]] = relationship(back_populates="last_scan_run")
     errors: Mapped[list[ScanError]] = relationship(back_populates="scan_run")
     metadata_observations: Mapped[list[MetadataObservation]] = relationship(back_populates="scan_run")
+    metadata_file_results: Mapped[list[MetadataFileResult]] = relationship(back_populates="scan_run")
 
 
 class AudioAsset(Base):
@@ -81,6 +82,7 @@ class FileInstance(Base):
     audio_asset: Mapped[AudioAsset] = relationship(back_populates="file_instances")
     last_scan_run: Mapped[ScanRun | None] = relationship(back_populates="file_instances")
     metadata_observations: Mapped[list[MetadataObservation]] = relationship(back_populates="file_instance")
+    metadata_file_results: Mapped[list[MetadataFileResult]] = relationship(back_populates="file_instance")
 
 
 class ScanError(Base):
@@ -129,3 +131,27 @@ class MetadataObservation(Base):
     audio_asset: Mapped[AudioAsset] = relationship(back_populates="metadata_observations")
     file_instance: Mapped[FileInstance] = relationship(back_populates="metadata_observations")
     scan_run: Mapped[ScanRun] = relationship(back_populates="metadata_observations")
+
+
+class MetadataFileResult(Base):
+    __tablename__ = "metadata_file_results"
+    __table_args__ = (
+        UniqueConstraint(
+            "scan_run_id",
+            "file_instance_id",
+            name="uq_metadata_file_results_scan_run_file",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
+    scan_run_id: Mapped[str] = mapped_column(ForeignKey("scan_runs.id"), nullable=False, index=True)
+    file_instance_id: Mapped[str] = mapped_column(ForeignKey("file_instances.id"), nullable=False, index=True)
+    path: Mapped[str] = mapped_column(Text, nullable=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    observation_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    error: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow, onupdate=utcnow)
+
+    scan_run: Mapped[ScanRun] = relationship(back_populates="metadata_file_results")
+    file_instance: Mapped[FileInstance] = relationship(back_populates="metadata_file_results")

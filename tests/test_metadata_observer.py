@@ -7,13 +7,15 @@ from pathlib import Path
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
 
-from sampletagharmonizer.db.models import AudioAsset, Base, FileInstance, MetadataObservation, ScanError, ScanRun
-from sampletagharmonizer.metadata import SOURCE_NI_SOUNDINFO_UTF16
+from sampletagharmonizer.db.models import AudioAsset, Base, FileInstance, MetadataFileResult, MetadataObservation, ScanError, ScanRun
+from sampletagharmonizer.metadata import METADATA_FILE_STATUS_OBSERVED, SOURCE_NI_SOUNDINFO_UTF16
 from sampletagharmonizer.parsers.ni_metadata import NI_SOUNDINFO_MIME
 from sampletagharmonizer.services.metadata_observer import (
     extract_metadata_from_file_instances,
+    latest_interrupted_metadata_scan_run_id,
     latest_metadata_error_scan_run_id,
     metadata_error_file_instances_for_scan_run,
+    metadata_resume_file_instances_for_scan_run,
 )
 
 
@@ -115,7 +117,9 @@ class MetadataObserverTest(unittest.TestCase):
                 session.commit()
 
                 observation = session.scalars(select(MetadataObservation)).one()
+                file_result = session.scalars(select(MetadataFileResult)).one()
 
+            self.assertEqual(result.status, "completed")
             self.assertEqual(result.scanned_files, 1)
             self.assertEqual(result.observed_files, 1)
             self.assertEqual(result.observation_count, 1)
@@ -132,6 +136,9 @@ class MetadataObserverTest(unittest.TestCase):
             self.assertEqual(observation.product, "Factory Library")
             self.assertEqual(observation.category_paths, [["Drums", "Kick"]])
             self.assertEqual(observation.attributes, {"color": "Bright"})
+            self.assertEqual(file_result.status, METADATA_FILE_STATUS_OBSERVED)
+            self.assertEqual(file_result.observation_count, 1)
+            engine.dispose()
 
     def test_finds_metadata_error_file_instances_for_retry(self) -> None:
         engine = create_engine("sqlite+pysqlite:///:memory:", future=True)
@@ -160,6 +167,111 @@ class MetadataObserverTest(unittest.TestCase):
             retry_files = metadata_error_file_instances_for_scan_run(session, scan_run.id)
 
         self.assertEqual([item.path for item in retry_files], ["/samples/error.wav"])
+        engine.dispose()
+
+    def test_marks_run_interrupted_and_keeps_committed_batches(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "sample.wav"
+            geob_data = b"".join(
+                [
+                    b"\x00\x00",
+                    NI_SOUNDINFO_MIME.encode("latin-1"),
+                    b"\x00",
+                    encoded_string("Kick Tight"),
+                ]
+            )
+            path.write_bytes(
+                wav_bytes(
+                    [
+                        riff_chunk(b"fmt ", fmt_payload()),
+                        riff_chunk(b"data", b"\x01\x02\x03\x04"),
+                        riff_chunk(b"ID3 ", id3_payload([geob_frame(geob_data)])),
+                    ]
+                )
+            )
+
+            engine = create_engine("sqlite+pysqlite:///:memory:", future=True)
+            Base.metadata.create_all(engine)
+            with Session(engine) as session:
+                asset = AudioAsset(data_sha256="0" * 64, data_size=4)
+                file_instance = FileInstance(
+                    audio_asset=asset,
+                    path=str(path),
+                    file_name=path.name,
+                    suffix=".wav",
+                    file_size=path.stat().st_size,
+                    mtime_ns=path.stat().st_mtime_ns,
+                )
+                session.add(file_instance)
+                session.commit()
+
+                def interrupted_files():
+                    yield file_instance
+                    raise KeyboardInterrupt
+
+                result = extract_metadata_from_file_instances(
+                    session=session,
+                    file_instances=interrupted_files(),
+                    dataset_path="test",
+                    batch_size=1,
+                )
+
+                observations = list(session.scalars(select(MetadataObservation)))
+                scan_run = session.scalars(select(ScanRun)).one()
+                file_result = session.scalars(select(MetadataFileResult)).one()
+
+            self.assertEqual(result.status, "interrupted")
+            self.assertEqual(result.scanned_files, 1)
+            self.assertEqual(result.observation_count, 1)
+            self.assertEqual(len(observations), 1)
+            self.assertEqual(scan_run.status, "interrupted")
+            self.assertEqual(file_result.status, METADATA_FILE_STATUS_OBSERVED)
+            engine.dispose()
+
+    def test_finds_unprocessed_file_instances_for_resume(self) -> None:
+        engine = create_engine("sqlite+pysqlite:///:memory:", future=True)
+        Base.metadata.create_all(engine)
+        with Session(engine) as session:
+            asset = AudioAsset(data_sha256="0" * 64, data_size=4)
+            processed = FileInstance(
+                audio_asset=asset,
+                path="/samples/a.wav",
+                file_name="a.wav",
+                suffix=".wav",
+                file_size=4,
+                mtime_ns=1,
+            )
+            pending = FileInstance(
+                audio_asset=asset,
+                path="/samples/b.wav",
+                file_name="b.wav",
+                suffix=".wav",
+                file_size=4,
+                mtime_ns=1,
+            )
+            scan_run = ScanRun(
+                dataset_path="metadata-observations:indexed-files",
+                scanner_version="test",
+                status="interrupted",
+            )
+            session.add_all([processed, pending, scan_run])
+            session.flush()
+            session.add(
+                MetadataFileResult(
+                    scan_run=scan_run,
+                    file_instance=processed,
+                    path=processed.path,
+                    status=METADATA_FILE_STATUS_OBSERVED,
+                    observation_count=1,
+                )
+            )
+            session.commit()
+
+            self.assertEqual(latest_interrupted_metadata_scan_run_id(session), scan_run.id)
+            resume_files = metadata_resume_file_instances_for_scan_run(session, scan_run.id)
+
+        self.assertEqual([item.path for item in resume_files], ["/samples/b.wav"])
+        engine.dispose()
 
 
 if __name__ == "__main__":

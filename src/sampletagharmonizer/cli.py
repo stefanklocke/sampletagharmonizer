@@ -61,33 +61,57 @@ def init_db(args: argparse.Namespace) -> int:
 def index(args: argparse.Namespace) -> int:
     from .config import database_url_from_env
     from .db.session import session_scope
-    from .services.indexer import count_wav_files, index_dataset
+    from .services.indexer import (
+        count_wav_files,
+        index_dataset,
+        index_resume,
+        index_resume_paths_for_scan_run,
+        latest_interrupted_index_scan_run_id,
+    )
 
     root = args.path or dataset_path_from_env(args.env)
     database_url = args.database_url or database_url_from_env(args.env)
     progress = None
+    source_scan_run_id = None
+    resume_requested = args.resume or args.resume_scan_run_id is not None
     if not args.no_progress:
-        sys.stderr.write("Counting WAV files...\n")
+        sys.stderr.write("Counting WAV files...\n" if not resume_requested else "Counting remaining WAV files...\n")
         sys.stderr.flush()
-        total = count_wav_files(root, args.limit)
-        progress = ProgressBar(total)
-        progress.render(0, 0, 0)
     with session_scope(database_url, args.env) as session:
-        result = index_dataset(session, root, args.limit, progress)
+        if not args.no_progress:
+            if resume_requested:
+                source_scan_run_id = args.resume_scan_run_id or latest_interrupted_index_scan_run_id(session)
+                if source_scan_run_id is None:
+                    raise SystemExit("No interrupted index run found.")
+                total = len(index_resume_paths_for_scan_run(session, source_scan_run_id, args.limit))
+            else:
+                total = count_wav_files(root, args.limit)
+            progress = ProgressBar(total)
+            progress.render(0, 0, 0)
+
+        if resume_requested:
+            source_scan_run_id, result = index_resume(
+                session=session,
+                source_scan_run_id=args.resume_scan_run_id,
+                limit=args.limit,
+                progress=progress,
+                batch_size=args.batch_size,
+            )
+        else:
+            result = index_dataset(session, root, args.limit, progress, args.batch_size)
     if progress is not None:
         progress.finish(result.scanned_files, result.indexed_files, result.error_count)
-    print(
-        json.dumps(
-            {
-                "scan_run_id": result.scan_run_id,
-                "dataset_path": str(root),
-                "scanned_files": result.scanned_files,
-                "indexed_files": result.indexed_files,
-                "error_count": result.error_count,
-            },
-            indent=2,
-        )
-    )
+    output = {
+        "scan_run_id": result.scan_run_id,
+        "status": result.status,
+        "dataset_path": str(root),
+        "scanned_files": result.scanned_files,
+        "indexed_files": result.indexed_files,
+        "error_count": result.error_count,
+    }
+    if source_scan_run_id is not None:
+        output["source_scan_run_id"] = source_scan_run_id
+    print(json.dumps(output, indent=2))
     return 0
 
 
@@ -107,7 +131,7 @@ def retry_errors(args: argparse.Namespace) -> int:
         if progress is not None:
             progress.render(0, 0, 0)
 
-        result = retry_error_paths(session, source_scan_run_id, args.limit, progress)
+        result = retry_error_paths(session, source_scan_run_id, args.limit, progress, args.batch_size)
 
     if progress is not None:
         progress.finish(result.scanned_files, result.indexed_files, result.error_count)
@@ -116,6 +140,7 @@ def retry_errors(args: argparse.Namespace) -> int:
             {
                 "source_scan_run_id": source_scan_run_id,
                 "scan_run_id": result.scan_run_id,
+                "status": result.status,
                 "scanned_files": result.scanned_files,
                 "indexed_files": result.indexed_files,
                 "error_count": result.error_count,
@@ -129,32 +154,54 @@ def retry_errors(args: argparse.Namespace) -> int:
 def extract_metadata(args: argparse.Namespace) -> int:
     from .config import database_url_from_env
     from .db.session import session_scope
-    from .services.metadata_observer import count_indexed_files, extract_metadata_from_index
+    from .services.metadata_observer import (
+        count_indexed_files,
+        extract_metadata_from_index,
+        extract_metadata_resume,
+        latest_interrupted_metadata_scan_run_id,
+        metadata_resume_file_instances_for_scan_run,
+    )
 
     database_url = args.database_url or database_url_from_env(args.env)
     progress = None
+    source_scan_run_id = None
+    resume_requested = args.resume or args.resume_scan_run_id is not None
     with session_scope(database_url, args.env) as session:
         if not args.no_progress:
-            total = count_indexed_files(session, args.limit)
+            if resume_requested:
+                source_scan_run_id = args.resume_scan_run_id or latest_interrupted_metadata_scan_run_id(session)
+                if source_scan_run_id is None:
+                    raise SystemExit("No interrupted metadata extraction run found.")
+                total = len(metadata_resume_file_instances_for_scan_run(session, source_scan_run_id, args.limit))
+            else:
+                total = count_indexed_files(session, args.limit)
             progress = ProgressBar(total, success_label="observations")
             progress.render(0, 0, 0)
 
-        result = extract_metadata_from_index(session, args.limit, progress)
+        if resume_requested:
+            source_scan_run_id, result = extract_metadata_resume(
+                session=session,
+                source_scan_run_id=args.resume_scan_run_id,
+                limit=args.limit,
+                progress=progress,
+                batch_size=args.batch_size,
+            )
+        else:
+            result = extract_metadata_from_index(session, args.limit, progress, args.batch_size)
 
     if progress is not None:
         progress.finish(result.scanned_files, result.observation_count, result.error_count)
-    print(
-        json.dumps(
-            {
-                "scan_run_id": result.scan_run_id,
-                "scanned_files": result.scanned_files,
-                "observed_files": result.observed_files,
-                "observation_count": result.observation_count,
-                "error_count": result.error_count,
-            },
-            indent=2,
-        )
-    )
+    output = {
+        "scan_run_id": result.scan_run_id,
+        "status": result.status,
+        "scanned_files": result.scanned_files,
+        "observed_files": result.observed_files,
+        "observation_count": result.observation_count,
+        "error_count": result.error_count,
+    }
+    if source_scan_run_id is not None:
+        output["source_scan_run_id"] = source_scan_run_id
+    print(json.dumps(output, indent=2))
     return 0
 
 
@@ -179,7 +226,7 @@ def retry_metadata_errors(args: argparse.Namespace) -> int:
             progress = ProgressBar(total, success_label="observations")
             progress.render(0, 0, 0)
 
-        result = retry_metadata_error_file_instances(session, source_scan_run_id, args.limit, progress)
+        result = retry_metadata_error_file_instances(session, source_scan_run_id, args.limit, progress, args.batch_size)
 
     if progress is not None:
         progress.finish(result.scanned_files, result.observation_count, result.error_count)
@@ -188,6 +235,7 @@ def retry_metadata_errors(args: argparse.Namespace) -> int:
             {
                 "source_scan_run_id": source_scan_run_id,
                 "scan_run_id": result.scan_run_id,
+                "status": result.status,
                 "scanned_files": result.scanned_files,
                 "observed_files": result.observed_files,
                 "observation_count": result.observation_count,
@@ -213,6 +261,9 @@ def build_parser() -> argparse.ArgumentParser:
     index_parser.add_argument("--env", type=Path, default=Path(".env"), help="Dotenv file containing DATASET_PATH_NI and DATABASE_URL.")
     index_parser.add_argument("--database-url", help="SQLAlchemy database URL. Overrides DATABASE_URL.")
     index_parser.add_argument("--limit", type=int, help="Maximum number of WAV files to inspect.")
+    index_parser.add_argument("--batch-size", type=int, default=500, help="Commit indexing progress every N scanned files.")
+    index_parser.add_argument("--resume", action="store_true", help="Resume the latest interrupted index run.")
+    index_parser.add_argument("--resume-scan-run-id", help="Interrupted index run to resume. Implies --resume.")
     index_parser.add_argument("--no-progress", action="store_true", help="Disable the console progress bar.")
     index_parser.set_defaults(func=index)
 
@@ -221,6 +272,7 @@ def build_parser() -> argparse.ArgumentParser:
     retry_parser.add_argument("--env", type=Path, default=Path(".env"), help="Dotenv file containing DATABASE_URL.")
     retry_parser.add_argument("--database-url", help="SQLAlchemy database URL. Overrides DATABASE_URL.")
     retry_parser.add_argument("--limit", type=int, help="Maximum number of errored files to retry.")
+    retry_parser.add_argument("--batch-size", type=int, default=500, help="Commit index retry progress every N scanned files.")
     retry_parser.add_argument("--no-progress", action="store_true", help="Disable the console progress bar.")
     retry_parser.set_defaults(func=retry_errors)
 
@@ -231,6 +283,9 @@ def build_parser() -> argparse.ArgumentParser:
     metadata_parser.add_argument("--env", type=Path, default=Path(".env"), help="Dotenv file containing DATABASE_URL.")
     metadata_parser.add_argument("--database-url", help="SQLAlchemy database URL. Overrides DATABASE_URL.")
     metadata_parser.add_argument("--limit", type=int, help="Maximum number of indexed files to inspect.")
+    metadata_parser.add_argument("--batch-size", type=int, default=500, help="Commit metadata extraction progress every N scanned files.")
+    metadata_parser.add_argument("--resume", action="store_true", help="Resume the latest interrupted metadata extraction run.")
+    metadata_parser.add_argument("--resume-scan-run-id", help="Interrupted metadata extraction run to resume. Implies --resume.")
     metadata_parser.add_argument("--no-progress", action="store_true", help="Disable the console progress bar.")
     metadata_parser.set_defaults(func=extract_metadata)
 
@@ -242,6 +297,7 @@ def build_parser() -> argparse.ArgumentParser:
     retry_metadata_parser.add_argument("--env", type=Path, default=Path(".env"), help="Dotenv file containing DATABASE_URL.")
     retry_metadata_parser.add_argument("--database-url", help="SQLAlchemy database URL. Overrides DATABASE_URL.")
     retry_metadata_parser.add_argument("--limit", type=int, help="Maximum number of errored files to retry.")
+    retry_metadata_parser.add_argument("--batch-size", type=int, default=500, help="Commit metadata retry progress every N scanned files.")
     retry_metadata_parser.add_argument("--no-progress", action="store_true", help="Disable the console progress bar.")
     retry_metadata_parser.set_defaults(func=retry_metadata_errors)
 

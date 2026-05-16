@@ -9,14 +9,21 @@ from sqlalchemy import delete, desc, or_, select
 from sqlalchemy.orm import Session
 
 from sampletagharmonizer import __version__
-from sampletagharmonizer.db.models import FileInstance, MetadataObservation, ScanError, ScanRun
-from sampletagharmonizer.metadata import SOURCE_NI_MSGPACK, SOURCE_NI_SOUNDINFO_UTF16
+from sampletagharmonizer.db.models import FileInstance, MetadataFileResult, MetadataObservation, ScanError, ScanRun
+from sampletagharmonizer.metadata import (
+    METADATA_FILE_STATUS_ERROR,
+    METADATA_FILE_STATUS_NO_METADATA,
+    METADATA_FILE_STATUS_OBSERVED,
+    SOURCE_NI_MSGPACK,
+    SOURCE_NI_SOUNDINFO_UTF16,
+)
 from sampletagharmonizer.parsers.ni_metadata import inspect_wav
 
 
 @dataclass(frozen=True)
 class MetadataExtractionResult:
     scan_run_id: str
+    status: str
     scanned_files: int
     observed_files: int
     observation_count: int
@@ -39,6 +46,7 @@ def extract_metadata_from_index(
     session: Session,
     limit: int | None = None,
     progress: ProgressCallback | None = None,
+    batch_size: int = 500,
 ) -> MetadataExtractionResult:
     return extract_metadata_from_file_instances(
         session=session,
@@ -46,6 +54,43 @@ def extract_metadata_from_index(
         dataset_path="metadata-observations:indexed-files",
         limit=limit,
         progress=progress,
+        batch_size=batch_size,
+    )
+
+
+def extract_metadata_resume(
+    session: Session,
+    source_scan_run_id: str | None = None,
+    limit: int | None = None,
+    progress: ProgressCallback | None = None,
+    batch_size: int = 500,
+) -> tuple[str, MetadataExtractionResult]:
+    source_scan_run_id = source_scan_run_id or latest_interrupted_metadata_scan_run_id(session)
+    if source_scan_run_id is None:
+        raise ValueError("No interrupted metadata extraction run found.")
+    result = extract_metadata_from_file_instances(
+        session=session,
+        file_instances=metadata_resume_file_instances_for_scan_run(session, source_scan_run_id, limit),
+        dataset_path=f"metadata-resume:{source_scan_run_id}",
+        progress=progress,
+        batch_size=batch_size,
+    )
+    return source_scan_run_id, result
+
+
+def latest_interrupted_metadata_scan_run_id(session: Session) -> str | None:
+    return session.scalar(
+        select(ScanRun.id)
+        .where(ScanRun.status == "interrupted")
+        .where(
+            or_(
+                ScanRun.dataset_path.like("metadata-observations:%"),
+                ScanRun.dataset_path.like("metadata-retry-errors:%"),
+                ScanRun.dataset_path.like("metadata-resume:%"),
+            )
+        )
+        .order_by(desc(ScanRun.started_at))
+        .limit(1)
     )
 
 
@@ -94,17 +139,37 @@ def metadata_error_file_instances_for_scan_run(
     return [by_path[path] for path in paths if path in by_path]
 
 
+def metadata_resume_file_instances_for_scan_run(
+    session: Session,
+    scan_run_id: str,
+    limit: int | None = None,
+) -> list[FileInstance]:
+    processed_ids = set(
+        session.scalars(
+            select(MetadataFileResult.file_instance_id).where(MetadataFileResult.scan_run_id == scan_run_id)
+        )
+    )
+    query = select(FileInstance).order_by(FileInstance.path)
+    if processed_ids:
+        query = query.where(FileInstance.id.not_in(processed_ids))
+    if limit is not None:
+        query = query.limit(limit)
+    return list(session.scalars(query))
+
+
 def retry_metadata_errors(
     session: Session,
     source_scan_run_id: str,
     limit: int | None = None,
     progress: ProgressCallback | None = None,
+    batch_size: int = 500,
 ) -> MetadataExtractionResult:
     return extract_metadata_from_file_instances(
         session=session,
         file_instances=metadata_error_file_instances_for_scan_run(session, source_scan_run_id, limit),
         dataset_path=f"metadata-retry-errors:{source_scan_run_id}",
         progress=progress,
+        batch_size=batch_size,
     )
 
 
@@ -114,15 +179,17 @@ def extract_metadata_from_file_instances(
     dataset_path: str,
     limit: int | None = None,
     progress: ProgressCallback | None = None,
+    batch_size: int = 500,
 ) -> MetadataExtractionResult:
     scan_run = ScanRun(dataset_path=dataset_path, scanner_version=__version__)
     session.add(scan_run)
-    session.flush()
+    session.commit()
 
     scanned = 0
     observed_files = 0
     observation_count = 0
     errors = 0
+    status = "running"
     try:
         for file_instance in file_instances:
             if limit is not None and scanned >= limit:
@@ -131,34 +198,72 @@ def extract_metadata_from_file_instances(
             try:
                 observations = observations_for_file_instance(file_instance, scan_run)
                 replace_observations(session, file_instance, observations)
+                replace_file_result(
+                    session=session,
+                    scan_run=scan_run,
+                    file_instance=file_instance,
+                    status=METADATA_FILE_STATUS_OBSERVED if observations else METADATA_FILE_STATUS_NO_METADATA,
+                    observation_count=len(observations),
+                )
                 if observations:
                     observed_files += 1
                     observation_count += len(observations)
             except Exception as exc:  # noqa: BLE001 - extraction should keep going across bad files.
                 errors += 1
                 session.add(ScanError(scan_run=scan_run, path=file_instance.path, error=str(exc)))
+                replace_file_result(
+                    session=session,
+                    scan_run=scan_run,
+                    file_instance=file_instance,
+                    status=METADATA_FILE_STATUS_ERROR,
+                    observation_count=0,
+                    error=str(exc),
+                )
 
             if scanned % 100 == 0:
                 session.flush()
+            if batch_size > 0 and scanned % batch_size == 0:
+                _update_scan_run(scan_run, scanned, observation_count, errors, "running")
+                session.commit()
             if progress is not None:
                 progress(scanned, observation_count, errors)
 
-        scan_run.status = "completed" if errors == 0 else "completed_with_errors"
-        return MetadataExtractionResult(
-            scan_run_id=scan_run.id,
-            scanned_files=scanned,
-            observed_files=observed_files,
-            observation_count=observation_count,
-            error_count=errors,
-        )
+        status = "completed" if errors == 0 else "completed_with_errors"
+    except KeyboardInterrupt:
+        status = "interrupted"
     except Exception:
-        scan_run.status = "failed"
+        _update_scan_run(scan_run, scanned, observation_count, errors, "failed")
+        session.commit()
         raise
     finally:
-        scan_run.scanned_files = scanned
-        scan_run.indexed_files = observation_count
-        scan_run.error_count = errors
+        _update_scan_run(scan_run, scanned, observation_count, errors, status)
+        session.commit()
+
+    return MetadataExtractionResult(
+        scan_run_id=scan_run.id,
+        status=status,
+        scanned_files=scanned,
+        observed_files=observed_files,
+        observation_count=observation_count,
+        error_count=errors,
+    )
+
+
+def _update_scan_run(
+    scan_run: ScanRun,
+    scanned_files: int,
+    observation_count: int,
+    error_count: int,
+    status: str,
+) -> None:
+    scan_run.status = status
+    scan_run.scanned_files = scanned_files
+    scan_run.indexed_files = observation_count
+    scan_run.error_count = error_count
+    if status != "running":
         scan_run.finished_at = datetime.now(UTC)
+    else:
+        scan_run.finished_at = None
 
 
 def observations_for_file_instance(
@@ -212,8 +317,34 @@ def replace_observations(
     session.add_all(observations)
 
 
+def replace_file_result(
+    session: Session,
+    scan_run: ScanRun,
+    file_instance: FileInstance,
+    status: str,
+    observation_count: int,
+    error: str | None = None,
+) -> None:
+    session.execute(
+        delete(MetadataFileResult).where(
+            MetadataFileResult.scan_run_id == scan_run.id,
+            MetadataFileResult.file_instance_id == file_instance.id,
+        )
+    )
+    session.add(
+        MetadataFileResult(
+            scan_run_id=scan_run.id,
+            file_instance_id=file_instance.id,
+            path=file_instance.path,
+            status=status,
+            observation_count=observation_count,
+            error=error,
+        )
+    )
+
+
 def _iter_indexed_file_instances(session: Session) -> Iterable[FileInstance]:
-    yield from session.scalars(select(FileInstance).order_by(FileInstance.path))
+    return list(session.scalars(select(FileInstance).order_by(FileInstance.path)))
 
 
 def _msgpack_observation(
