@@ -1,18 +1,9 @@
 from __future__ import annotations
 
 import struct
-from dataclasses import dataclass
 from typing import Any
 
-
-class MsgpackDecodeError(ValueError):
-    pass
-
-
-@dataclass(frozen=True)
-class DecodeResult:
-    value: Any
-    consumed: int
+from .models import MsgpackDecodeError, MsgpackDecodeResult
 
 
 class _Decoder:
@@ -88,10 +79,10 @@ class _Decoder:
         raise MsgpackDecodeError(f"unsupported MessagePack marker 0x{marker:02x}")
 
 
-def decode_prefix(data: bytes) -> DecodeResult:
+def decode_prefix(data: bytes) -> MsgpackDecodeResult:
     decoder = _Decoder(data)
     value = decoder.decode()
-    return DecodeResult(value=value, consumed=decoder.pos)
+    return MsgpackDecodeResult(value=value, consumed=decoder.pos)
 
 
 def looks_like_ni_tag_object(value: Any) -> bool:
