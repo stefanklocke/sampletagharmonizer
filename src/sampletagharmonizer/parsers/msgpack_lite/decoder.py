@@ -27,7 +27,7 @@ class _Decoder:
         if marker <= 0x7F:
             return marker
         if 0x80 <= marker <= 0x8F:
-            return {self.decode(depth + 1): self.decode(depth + 1) for _ in range(marker & 0x0F)}
+            return self.decode_map(marker & 0x0F, depth)
         if 0x90 <= marker <= 0x9F:
             return [self.decode(depth + 1) for _ in range(marker & 0x0F)]
         if 0xA0 <= marker <= 0xBF:
@@ -72,11 +72,22 @@ class _Decoder:
         if marker == 0xDD:
             return [self.decode(depth + 1) for _ in range(struct.unpack(">I", self.read(4))[0])]
         if marker == 0xDE:
-            return {self.decode(depth + 1): self.decode(depth + 1) for _ in range(struct.unpack(">H", self.read(2))[0])}
+            return self.decode_map(struct.unpack(">H", self.read(2))[0], depth)
         if marker == 0xDF:
-            return {self.decode(depth + 1): self.decode(depth + 1) for _ in range(struct.unpack(">I", self.read(4))[0])}
+            return self.decode_map(struct.unpack(">I", self.read(4))[0], depth)
 
         raise MsgpackDecodeError(f"unsupported MessagePack marker 0x{marker:02x}")
+
+    def decode_map(self, size: int, depth: int) -> dict[Any, Any]:
+        result: dict[Any, Any] = {}
+        for _ in range(size):
+            key = self.decode(depth + 1)
+            value = self.decode(depth + 1)
+            try:
+                result[key] = value
+            except TypeError as exc:
+                raise MsgpackDecodeError("map key is not hashable") from exc
+        return result
 
 
 def decode_prefix(data: bytes) -> MsgpackDecodeResult:

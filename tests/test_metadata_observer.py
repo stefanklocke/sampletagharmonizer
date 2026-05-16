@@ -8,6 +8,7 @@ from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
 
 from sampletagharmonizer.db.models import AudioAsset, Base, FileInstance, MetadataObservation
+from sampletagharmonizer.metadata import SOURCE_NI_SOUNDINFO_UTF16
 from sampletagharmonizer.parsers.ni_metadata import NI_SOUNDINFO_MIME
 from sampletagharmonizer.services.metadata_observer import extract_metadata_from_file_instances
 
@@ -115,7 +116,13 @@ class MetadataObserverTest(unittest.TestCase):
             self.assertEqual(result.observed_files, 1)
             self.assertEqual(result.observation_count, 1)
             self.assertEqual(result.error_count, 0)
-            self.assertEqual(observation.source_type, "ni_soundinfo_utf16")
+            self.assertEqual(observation.source_type, SOURCE_NI_SOUNDINFO_UTF16)
+            self.assertEqual(observation.source_chunk_id, "ID3 ")
+            self.assertIsNotNone(observation.source_chunk_offset)
+            self.assertEqual(observation.source_frame_id, "GEOB")
+            self.assertEqual(observation.source_frame_offset, 10)
+            self.assertIsNotNone(observation.source_payload_offset)
+            self.assertEqual(observation.source_payload_size, len(geob_data) - 2)
             self.assertEqual(observation.title, "Kick Tight")
             self.assertEqual(observation.vendor, "Native Instruments")
             self.assertEqual(observation.product, "Factory Library")

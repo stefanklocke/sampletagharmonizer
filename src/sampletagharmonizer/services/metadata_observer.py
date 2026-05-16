@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 
 from sampletagharmonizer import __version__
 from sampletagharmonizer.db.models import FileInstance, MetadataObservation, ScanError, ScanRun
+from sampletagharmonizer.metadata import SOURCE_NI_MSGPACK, SOURCE_NI_SOUNDINFO_UTF16
 from sampletagharmonizer.parsers.ni_metadata import inspect_wav
 
 
@@ -115,14 +116,20 @@ def observations_for_file_instance(
                 audio_asset_id=file_instance.audio_asset_id,
                 file_instance_id=file_instance.id,
                 scan_run_id=scan_run.id,
-                source_type="ni_soundinfo_utf16",
+                source_type=SOURCE_NI_SOUNDINFO_UTF16,
                 observation_index=index,
+                source_chunk_id=soundinfo.get("source_chunk_id"),
+                source_chunk_offset=soundinfo.get("source_chunk_offset"),
+                source_frame_id=soundinfo.get("source_frame_id"),
+                source_frame_offset=soundinfo.get("source_frame_offset"),
+                source_payload_offset=soundinfo.get("source_payload_offset"),
+                source_payload_size=soundinfo.get("source_payload_size"),
                 title=summary.get("title"),
                 vendor=summary.get("vendor"),
                 product=summary.get("product"),
                 category_paths=summary.get("category_paths"),
                 attributes=summary.get("attributes"),
-                raw_payload=soundinfo,
+                raw_payload=_raw_soundinfo_payload(soundinfo),
             )
         )
 
@@ -168,12 +175,26 @@ def _msgpack_observation(
         audio_asset_id=file_instance.audio_asset_id,
         file_instance_id=file_instance.id,
         scan_run_id=scan_run.id,
-        source_type="ni_msgpack",
+        source_type=SOURCE_NI_MSGPACK,
         observation_index=observation_index,
+        source_chunk_id=candidate.get("chunk_id"),
+        source_chunk_offset=candidate.get("chunk_offset"),
+        source_frame_id=candidate.get("frame_id"),
+        source_frame_offset=candidate.get("frame_offset"),
+        source_payload_offset=candidate.get("offset"),
+        source_payload_size=candidate.get("consumed"),
         title=value.get("name"),
         vendor=value.get("vendor"),
         product=product,
         category_paths=value.get("types"),
         attributes=attributes,
-        raw_payload=candidate,
+        raw_payload=_raw_msgpack_payload(candidate),
     )
+
+
+def _raw_soundinfo_payload(soundinfo: dict[str, Any]) -> dict[str, Any]:
+    return dict(soundinfo)
+
+
+def _raw_msgpack_payload(candidate: dict[str, Any]) -> dict[str, Any]:
+    return dict(candidate)
