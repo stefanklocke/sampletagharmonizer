@@ -79,13 +79,13 @@ Everything after this marker is treated as the NI soundinfo payload.
 
 ## Synchsafe Integer
 
-`_synchsafe_to_int()` dekodiert eine **synchsafe integer** aus ID3-Tags.
+`_synchsafe_to_int()` decodes a **synchsafe integer** from ID3 tags.
 
-Bei ID3v2 wird die Größe des gesamten Tags oft nicht als normaler 32-bit Integer gespeichert, sondern als 4 Bytes, bei denen pro Byte nur **7 Bits** Nutzdaten verwendet werden. Das höchste Bit jedes Bytes bleibt immer `0`.
+In ID3v2, the size of the full tag is often not stored as a normal 32-bit integer. Instead, it is stored as 4 bytes where each byte uses only **7 bits** of payload data. The highest bit of each byte always remains `0`.
 
-Warum? Damit im ID3-Metadatenblock keine Byte-Muster entstehen, die ein MP3-Decoder fälschlich als Audio-Sync-Header interpretieren könnte. Daher "sync-safe".
+Why? This prevents byte patterns inside the ID3 metadata block from being misinterpreted by an MP3 decoder as audio sync headers. That is why the encoding is called "sync-safe".
 
-Die Funktion:
+The function:
 
 ```python
 def _synchsafe_to_int(raw: bytes) -> int:
@@ -95,19 +95,19 @@ def _synchsafe_to_int(raw: bytes) -> int:
     return value
 ```
 
-macht pro Byte:
+does this for each byte:
 
-1. bisherigen Wert um 7 Bits nach links schieben
-2. nur die unteren 7 Bits des aktuellen Bytes nehmen: `byte & 0x7F`
-3. diese Bits an den Wert anhängen
+1. Shift the current value left by 7 bits.
+2. Keep only the lower 7 bits of the current byte: `byte & 0x7F`.
+3. Append these bits to the accumulated value.
 
-Beispiel:
+Example:
 
 ```text
 raw = 00 00 02 10
 ```
 
-wird nicht als normaler Big-Endian-Wert `528` gelesen, sondern als:
+is not read as the normal big-endian value `528`, but as:
 
 ```text
 0 << 7 | 0
@@ -116,13 +116,13 @@ wird nicht als normaler Big-Endian-Wert `528` gelesen, sondern als:
 2 << 7 | 16 = 272
 ```
 
-In unserem Code brauchen wir das hier:
+In this parser, it is used here:
 
 ```python
 tag_size = _synchsafe_to_int(data[6:10])
 ```
 
-Das sind im ID3-Header die 4 Bytes für die Tag-Größe. Die Frame-Größen selbst scheinen bei NI dagegen teils normale Big-Endian-Größen zu sein, deshalb gibt es zusätzlich `_frame_size()`.
+These are the 4 bytes for the tag size in the ID3 header. The frame sizes themselves appear to use normal big-endian values in some NI files, so `_frame_size()` handles that separately.
 
 ## Observed NI Payload Variants
 
