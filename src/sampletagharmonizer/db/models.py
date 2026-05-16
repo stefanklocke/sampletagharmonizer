@@ -3,7 +3,8 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from uuid import uuid4
 
-from sqlalchemy import BigInteger, DateTime, ForeignKey, Integer, String, Text, UniqueConstraint
+from sqlalchemy import JSON, BigInteger, DateTime, ForeignKey, Integer, String, Text, UniqueConstraint
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 
@@ -13,6 +14,9 @@ def utcnow() -> datetime:
 
 def new_uuid() -> str:
     return str(uuid4())
+
+
+json_type = JSON().with_variant(JSONB, "postgresql")
 
 
 class Base(DeclarativeBase):
@@ -34,6 +38,7 @@ class ScanRun(Base):
 
     file_instances: Mapped[list[FileInstance]] = relationship(back_populates="last_scan_run")
     errors: Mapped[list[ScanError]] = relationship(back_populates="scan_run")
+    metadata_observations: Mapped[list[MetadataObservation]] = relationship(back_populates="scan_run")
 
 
 class AudioAsset(Base):
@@ -52,6 +57,7 @@ class AudioAsset(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow, onupdate=utcnow)
 
     file_instances: Mapped[list[FileInstance]] = relationship(back_populates="audio_asset")
+    metadata_observations: Mapped[list[MetadataObservation]] = relationship(back_populates="audio_asset")
 
 
 class FileInstance(Base):
@@ -74,6 +80,7 @@ class FileInstance(Base):
 
     audio_asset: Mapped[AudioAsset] = relationship(back_populates="file_instances")
     last_scan_run: Mapped[ScanRun | None] = relationship(back_populates="file_instances")
+    metadata_observations: Mapped[list[MetadataObservation]] = relationship(back_populates="file_instance")
 
 
 class ScanError(Base):
@@ -86,3 +93,33 @@ class ScanError(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
 
     scan_run: Mapped[ScanRun] = relationship(back_populates="errors")
+
+
+class MetadataObservation(Base):
+    __tablename__ = "metadata_observations"
+    __table_args__ = (
+        UniqueConstraint(
+            "file_instance_id",
+            "source_type",
+            "observation_index",
+            name="uq_metadata_observations_file_source_index",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
+    audio_asset_id: Mapped[str] = mapped_column(ForeignKey("audio_assets.id"), nullable=False, index=True)
+    file_instance_id: Mapped[str] = mapped_column(ForeignKey("file_instances.id"), nullable=False, index=True)
+    scan_run_id: Mapped[str] = mapped_column(ForeignKey("scan_runs.id"), nullable=False, index=True)
+    source_type: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    observation_index: Mapped[int] = mapped_column(Integer, nullable=False)
+    title: Mapped[str | None] = mapped_column(Text)
+    vendor: Mapped[str | None] = mapped_column(Text)
+    product: Mapped[str | None] = mapped_column(Text)
+    category_paths: Mapped[list | None] = mapped_column(json_type)
+    attributes: Mapped[dict | None] = mapped_column(json_type)
+    raw_payload: Mapped[dict | None] = mapped_column(json_type)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+
+    audio_asset: Mapped[AudioAsset] = relationship(back_populates="metadata_observations")
+    file_instance: Mapped[FileInstance] = relationship(back_populates="metadata_observations")
+    scan_run: Mapped[ScanRun] = relationship(back_populates="metadata_observations")

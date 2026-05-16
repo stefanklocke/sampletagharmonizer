@@ -126,6 +126,38 @@ def retry_errors(args: argparse.Namespace) -> int:
     return 0
 
 
+def extract_metadata(args: argparse.Namespace) -> int:
+    from .config import database_url_from_env
+    from .db.session import session_scope
+    from .services.metadata_observer import count_indexed_files, extract_metadata_from_index
+
+    database_url = args.database_url or database_url_from_env(args.env)
+    progress = None
+    with session_scope(database_url, args.env) as session:
+        if not args.no_progress:
+            total = count_indexed_files(session, args.limit)
+            progress = ProgressBar(total, success_label="observations")
+            progress.render(0, 0, 0)
+
+        result = extract_metadata_from_index(session, args.limit, progress)
+
+    if progress is not None:
+        progress.finish(result.scanned_files, result.observation_count, result.error_count)
+    print(
+        json.dumps(
+            {
+                "scan_run_id": result.scan_run_id,
+                "scanned_files": result.scanned_files,
+                "observed_files": result.observed_files,
+                "observation_count": result.observation_count,
+                "error_count": result.error_count,
+            },
+            indent=2,
+        )
+    )
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="sampletagharmonizer")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -150,6 +182,16 @@ def build_parser() -> argparse.ArgumentParser:
     retry_parser.add_argument("--limit", type=int, help="Maximum number of errored files to retry.")
     retry_parser.add_argument("--no-progress", action="store_true", help="Disable the console progress bar.")
     retry_parser.set_defaults(func=retry_errors)
+
+    metadata_parser = subparsers.add_parser(
+        "extract-metadata",
+        help="Extract NI metadata observations from indexed WAV files into PostgreSQL.",
+    )
+    metadata_parser.add_argument("--env", type=Path, default=Path(".env"), help="Dotenv file containing DATABASE_URL.")
+    metadata_parser.add_argument("--database-url", help="SQLAlchemy database URL. Overrides DATABASE_URL.")
+    metadata_parser.add_argument("--limit", type=int, help="Maximum number of indexed files to inspect.")
+    metadata_parser.add_argument("--no-progress", action="store_true", help="Disable the console progress bar.")
+    metadata_parser.set_defaults(func=extract_metadata)
 
     scan_parser = subparsers.add_parser("scan", help="Read-only scan for NI metadata in WAV files.")
     scan_parser.add_argument("path", nargs="?", type=Path, help="Dataset root. Defaults to DATASET_PATH_NI from .env.")

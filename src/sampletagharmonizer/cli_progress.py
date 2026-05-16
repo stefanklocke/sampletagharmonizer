@@ -5,9 +5,10 @@ import time
 
 
 class ProgressBar:
-    def __init__(self, total: int, width: int = 32) -> None:
+    def __init__(self, total: int, width: int = 32, success_label: str = "indexed") -> None:
         self.total = max(total, 0)
         self.width = width
+        self.success_label = success_label
         self.started_at = time.monotonic()
         self.last_rendered_at = 0.0
 
@@ -28,7 +29,7 @@ class ProgressBar:
         line = (
             f"\r[{bar}] {percent:6.2%} "
             f"{scanned}/{self.total} scanned | "
-            f"{indexed} indexed | {errors} errors | "
+            f"{indexed} {self.success_label} | {errors} errors | "
             f"{rate:5.1f}/s | ETA {eta}"
         )
         sys.stderr.write(line)

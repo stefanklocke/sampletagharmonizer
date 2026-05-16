@@ -22,6 +22,7 @@ flowchart LR
     db --> scan_runs
     db --> audio_assets
     db --> file_instances
+    db --> metadata_observations
     db --> scan_errors
 ```
 
@@ -78,6 +79,32 @@ Stores one indexing run.
 
 Stores per-file errors without aborting the whole dataset scan.
 
+### `metadata_observations`
+
+Stores extracted metadata facts observed in indexed files. This is intentionally an
+intermediate layer between raw parser output and future normalized tag/taxonomy
+tables.
+
+Important fields:
+
+| Field | Meaning |
+| --- | --- |
+| `id` | Internal UUID |
+| `audio_asset_id` | Referenced audio content |
+| `file_instance_id` | Concrete file path where the metadata was observed |
+| `scan_run_id` | Extraction run that produced the observation |
+| `source_type` | Metadata source, e.g. `ni_soundinfo_utf16` or `ni_msgpack` |
+| `observation_index` | Stable index within the file/source for idempotent replacement |
+| `title` | Extracted sample title/name when available |
+| `vendor` | Extracted vendor when available |
+| `product` | Extracted product/bank when available |
+| `category_paths` | JSON category paths, e.g. `[["Loops"], ["Loops", "Vocal"]]` |
+| `attributes` | JSON map of normalized secondary fields |
+| `raw_payload` | JSON copy of the parsed source payload/candidate |
+
+Observations are replaced per file when metadata extraction is rerun, so parser
+fixes can be applied repeatedly without creating duplicate rows for the same file.
+
 ## Local PostgreSQL
 
 Start only PostgreSQL:
@@ -96,6 +123,12 @@ Index a small subset first:
 
 ```bash
 sth index --limit 100
+```
+
+Extract metadata observations from already indexed files:
+
+```bash
+sth extract-metadata --limit 100
 ```
 
 Or without installing the package:
@@ -133,6 +166,22 @@ The retry creates a new `scan_runs` row whose `dataset_path` is prefixed with
 `retry-errors:`. Existing `file_instances` are updated in place when a previously
 failed file is successfully indexed.
 
+## Extracting Metadata Observations
+
+`sth extract-metadata` scans existing `file_instances`, reads NI metadata from the
+corresponding WAV files, and stores one or more rows in `metadata_observations`.
+
+Currently supported observation sources:
+
+| Source type | Meaning |
+| --- | --- |
+| `ni_soundinfo_utf16` | GEOB SoundInfo payload summarized from length-prefixed UTF-16LE strings |
+| `ni_msgpack` | MessagePack tag object candidate found in a metadata chunk |
+
+The command creates a new `scan_runs` row with `dataset_path` set to
+`metadata-observations:indexed-files`. Per-file extraction errors are written to
+`scan_errors`.
+
 ## Current Scope
 
 The indexer currently stores:
@@ -142,8 +191,9 @@ The indexer currently stores:
 3. Full file path and filesystem metadata.
 4. Scan run status and per-file errors.
 
-It does not yet store NI tags, MessagePack payloads, category paths, or derived tag
-tables. Those belong to the next phase after the file index is reliable.
+Metadata extraction now stores observed NI tag facts in `metadata_observations`.
+It does not yet build normalized category/taxonomy tables. Those belong to the
+next phase after enough observations have been collected and inspected.
 
 ## WAV Parser Tolerance
 
