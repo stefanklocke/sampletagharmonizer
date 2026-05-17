@@ -5,6 +5,7 @@ from typing import BinaryIO
 
 from sampletagharmonizer.parsers.wav.riff import is_plausible_chunk_id
 
+from .id3_map import add_id3_regions
 from .models import ByteCoverageMap, ByteRegion, CoverageDiagnostic
 from .validator import classify_safety, validate_regions
 
@@ -63,10 +64,29 @@ def _coverage_map(
         file_size=file_size,
         declared_riff_end=declared_riff_end,
         effective_riff_end=effective_riff_end,
-        regions=sorted(regions, key=lambda region: (region.start, region.end, region.id)),
+        regions=_sort_regions(regions),
         diagnostics=all_diagnostics,
         safety=classify_safety(all_diagnostics),
     )
+
+
+def _sort_regions(regions: list[ByteRegion]) -> list[ByteRegion]:
+    by_id = {region.id: region for region in regions}
+
+    def depth(region: ByteRegion) -> int:
+        value = 0
+        parent_id = region.parent_id
+        seen = set()
+        while parent_id is not None and parent_id not in seen:
+            seen.add(parent_id)
+            parent = by_id.get(parent_id)
+            if parent is None:
+                break
+            value += 1
+            parent_id = parent.parent_id
+        return value
+
+    return sorted(regions, key=lambda region: (region.start, depth(region), region.end, region.id))
 
 
 def _effective_riff_end(
@@ -212,6 +232,9 @@ def _parse_chunks(
                 metadata={"chunk_id": chunk_id, "declared_payload_size": size},
             )
         )
+        if chunk_id == "ID3 ":
+            handle.seek(payload_start)
+            add_id3_regions(handle.read(size), payload_start, payload_id, regions, diagnostics)
         handle.seek(payload_end)
         _add_padding_after_payload(handle, chunk_id, size, payload_end, file_size, effective_riff_end, regions, diagnostics)
 

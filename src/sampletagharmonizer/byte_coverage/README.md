@@ -4,7 +4,7 @@
 
 This package builds read-only byte coverage maps for WAV files. The goal is to make parser behavior visible before the project starts writing NI metadata back into arbitrary files.
 
-The first implementation covers the RIFF/WAVE layer:
+The implementation currently covers the RIFF/WAVE layer:
 
 - RIFF/WAVE header
 - RIFF chunk headers
@@ -15,13 +15,50 @@ The first implementation covers the RIFF/WAVE layer:
 - tolerated extra zero-padding blocks
 - diagnostics for gaps, overlaps, truncation, and declared-size mismatches
 
-Later iterations can add nested metadata regions for ID3 headers, ID3 frames, GEOB payloads, NI SoundInfo strings, and MessagePack candidates.
+It also maps nested Native Instruments metadata regions inside `ID3 ` chunks:
+
+- ID3 header
+- ID3 frame headers
+- ID3 frame payloads
+- GEOB encoding and MIME fields
+- NI SoundInfo marker
+- NI SoundInfo payload
+- length-prefixed UTF-16LE strings
+- MessagePack tag-object candidates
 
 ## Structure
 
 - `models.py`: serializable byte-region, diagnostic, and map models.
+- `id3_map.py`: nested ID3, GEOB, SoundInfo, UTF-16LE string, and MessagePack regions.
 - `wav_map.py`: RIFF/WAVE byte map builder.
 - `validator.py`: generic top-level range validation and write-safety classification.
+
+## Hierarchy
+
+Regions use absolute file offsets and half-open intervals: `start` is inclusive, `end` is exclusive. Nested regions set `parent_id` to the containing region.
+
+Example hierarchy:
+
+```text
+WAV file
+├─ RIFF/WAVE header
+├─ fmt  chunk header
+├─ fmt  chunk payload
+├─ data chunk header
+├─ data chunk payload
+├─ ID3  chunk header
+└─ ID3  chunk payload
+   ├─ ID3 header
+   └─ GEOB frame
+      ├─ GEOB frame header
+      ├─ GEOB frame payload
+      │  ├─ GEOB encoding byte
+      │  ├─ GEOB MIME field
+      │  ├─ NI SoundInfo marker
+      │  ├─ NI SoundInfo payload
+      │  │  └─ length-prefixed UTF-16LE strings
+      │  └─ MessagePack candidates
+```
 
 ## CLI
 
