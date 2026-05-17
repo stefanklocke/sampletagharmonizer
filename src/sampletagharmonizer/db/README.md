@@ -42,6 +42,7 @@ flowchart LR
     db --> metadata_observations
     db --> metadata_file_results
     db --> byte_coverage_results
+    db --> write_safety_results
     db --> scan_errors
 ```
 
@@ -114,6 +115,7 @@ Synthetic `dataset_path` prefixes identify derived runs:
 | `metadata-retry-errors:` | Re-extract metadata for files from an earlier metadata run's errors |
 | `metadata-resume:` | Continue an interrupted metadata extraction or metadata retry run |
 | `byte-coverage:` | Store compact byte coverage validation results for a dataset |
+| `write-safety:` | Store compact write-safety policy results for a dataset |
 
 ### `scan_errors`
 
@@ -196,6 +198,30 @@ Important fields:
 
 Full region lists are not stored here. Generate them on demand with `sth byte-map <path>`.
 
+### `write_safety_results`
+
+Stores compact read-only write-safety policy decisions for dataset-level writer readiness analysis. This table does not indicate that files have been modified; it records whether the current policy would allow a future writer to modify them.
+
+Important fields:
+
+| Field | Meaning |
+| --- | --- |
+| `scan_run_id` | Write-safety run that produced the result |
+| `file_instance_id` | Indexed file instance when the path is known in `file_instances` |
+| `path` | File path that was validated |
+| `coverage_safety` | Underlying byte coverage classification |
+| `write_safety` | Policy-level write-safety classification |
+| `write_strategy` | Conservative strategy selected by the policy |
+| `requirements` | JSON map of boolean policy requirements |
+| `normalizations` | JSON list of known tolerances a future writer should normalize |
+| `blockers` | JSON list of policy blockers when the file is not directly writable |
+| `diagnostic_count` | Number of underlying coverage diagnostics |
+| `diagnostics_by_code` | JSON count of underlying coverage diagnostics by code |
+| `diagnostics_by_severity` | JSON count of underlying coverage diagnostics by severity |
+| `raw_summary` | Compact write-safety summary for audit/debugging |
+
+Use this table to inspect writer readiness at scale without rerunning the full byte map validation.
+
 ## Local PostgreSQL
 
 Start only PostgreSQL:
@@ -227,6 +253,7 @@ The schema currently stores enough information to:
 3. Keep per-run status and per-file errors.
 4. Store parser-derived NI metadata observations with byte-location provenance.
 5. Store compact byte coverage validation summaries.
-6. Resume interrupted indexing and metadata extraction runs.
+6. Store compact write-safety policy decisions.
+7. Resume interrupted indexing and metadata extraction runs.
 
 It does not yet include normalized category, taxonomy, confidence, or harmonization tables. Those belong to the next phase after enough observations have been collected and inspected.

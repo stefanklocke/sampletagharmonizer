@@ -7,9 +7,16 @@ from pathlib import Path
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
 
-from sampletagharmonizer.byte_coverage import build_wav_byte_map, validate_byte_coverage, validate_dataset_byte_coverage
+from sampletagharmonizer.byte_coverage import (
+    build_wav_byte_map,
+    validate_byte_coverage,
+    validate_dataset_byte_coverage,
+    validate_dataset_write_safety,
+    validate_write_safety,
+)
 from sampletagharmonizer.byte_coverage.storage import validate_dataset_byte_coverage_to_db
-from sampletagharmonizer.db.models import AudioAsset, Base, ByteCoverageResult, FileInstance, ScanRun
+from sampletagharmonizer.byte_coverage.write_storage import validate_dataset_write_safety_to_db
+from sampletagharmonizer.db.models import AudioAsset, Base, ByteCoverageResult, FileInstance, ScanRun, WriteSafetyResult
 from sampletagharmonizer.parsers.ni_metadata import NI_SOUNDINFO_MIME
 
 
@@ -358,6 +365,187 @@ class ByteCoverageTest(unittest.TestCase):
             self.assertEqual(result.coverage_safety, "safe_to_rewrite")
             self.assertEqual(result.diagnostic_count, 0)
             self.assertIn("audio", result.region_counts_by_kind)
+            engine.dispose()
+
+    def test_write_policy_accepts_single_existing_soundinfo_payload(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "safe.wav"
+            path.write_bytes(
+                wav_bytes(
+                    [
+                        chunk(b"fmt ", fmt_payload()),
+                        chunk(b"data", b"\x01\x02\x03\x04"),
+                        chunk(b"ID3 ", id3_payload([geob_frame(soundinfo_geob_data())])),
+                    ]
+                )
+            )
+
+            validation = validate_write_safety(path)
+
+        self.assertEqual(validation.write_safety, "safe_to_update_existing_metadata")
+        self.assertEqual(validation.write_strategy, "preserve_audio_update_existing_id3_geob")
+        self.assertEqual(validation.blockers, [])
+        self.assertTrue(all(validation.requirements.values()))
+
+    def test_write_policy_accepts_known_tolerances_with_normalization(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "safe-with-normalization.wav"
+            path.write_bytes(
+                wav_bytes(
+                    [
+                        chunk(b"fmt ", fmt_payload()),
+                        chunk(b"data", b"\x01\x02\x03", pad=False),
+                        chunk(b"ID3 ", id3_payload([geob_frame(soundinfo_geob_data())])),
+                    ]
+                )
+            )
+
+            validation = validate_write_safety(path)
+
+        self.assertEqual(validation.write_safety, "safe_with_normalization_to_update_existing_metadata")
+        self.assertEqual(validation.write_strategy, "normalize_then_update_existing_id3_geob")
+        self.assertEqual(validation.normalizations, ["missing_chunk_padding"])
+        self.assertEqual(validation.blockers, [])
+
+    def test_write_policy_requires_existing_id3_chunk(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "no-id3.wav"
+            path.write_bytes(
+                wav_bytes(
+                    [
+                        chunk(b"fmt ", fmt_payload()),
+                        chunk(b"data", b"\x01\x02\x03\x04"),
+                    ]
+                )
+            )
+
+            validation = validate_write_safety(path)
+
+        self.assertEqual(validation.write_safety, "read_only")
+        self.assertEqual(validation.write_strategy, "unsupported_missing_id3_chunk")
+        self.assertEqual([blocker["code"] for blocker in validation.blockers], ["missing_id3_chunk"])
+
+    def test_write_policy_requires_single_soundinfo_payload(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "multi-soundinfo.wav"
+            path.write_bytes(
+                wav_bytes(
+                    [
+                        chunk(b"fmt ", fmt_payload()),
+                        chunk(b"data", b"\x01\x02\x03\x04"),
+                        chunk(
+                            b"ID3 ",
+                            id3_payload(
+                                [
+                                    geob_frame(soundinfo_geob_data()),
+                                    geob_frame(soundinfo_geob_data()),
+                                ]
+                            ),
+                        ),
+                    ]
+                )
+            )
+
+            validation = validate_write_safety(path)
+
+        self.assertEqual(validation.write_safety, "review_required")
+        self.assertEqual(validation.write_strategy, "manual_review_multiple_ni_soundinfo_payloads")
+        self.assertEqual([blocker["code"] for blocker in validation.blockers], ["multiple_ni_soundinfo_payloads"])
+
+    def test_write_policy_rejects_coverage_errors(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "invalid.wav"
+            path.write_bytes(
+                wav_bytes(
+                    [
+                        chunk(b"fmt ", fmt_payload()),
+                        b"data" + (8).to_bytes(4, "little") + b"\x01\x02",
+                    ]
+                )
+            )
+
+            validation = validate_write_safety(path)
+
+        self.assertEqual(validation.coverage_safety, "invalid")
+        self.assertEqual(validation.write_safety, "read_only")
+        self.assertEqual(validation.write_strategy, "read_only_coverage_errors")
+        self.assertEqual([blocker["code"] for blocker in validation.blockers], ["coverage_errors"])
+
+    def test_validates_dataset_write_safety_summary_with_problem_filter(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "safe.wav").write_bytes(
+                wav_bytes(
+                    [
+                        chunk(b"fmt ", fmt_payload()),
+                        chunk(b"data", b"\x01\x02\x03\x04"),
+                        chunk(b"ID3 ", id3_payload([geob_frame(soundinfo_geob_data())])),
+                    ]
+                )
+            )
+            (root / "no-id3.wav").write_bytes(
+                wav_bytes(
+                    [
+                        chunk(b"fmt ", fmt_payload()),
+                        chunk(b"data", b"\x01\x02\x03\x04"),
+                    ]
+                )
+            )
+
+            validation = validate_dataset_write_safety(root, only_problematic=True)
+
+        self.assertEqual(validation.scanned_files, 2)
+        self.assertEqual(
+            validation.files_by_write_safety,
+            {"read_only": 1, "safe_to_update_existing_metadata": 1},
+        )
+        self.assertEqual(validation.blockers_by_code, {"missing_id3_chunk": 1})
+        self.assertEqual([Path(item.path).name for item in validation.files], ["no-id3.wav"])
+
+    def test_stores_dataset_write_safety_results(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            path = root / "safe.wav"
+            path.write_bytes(
+                wav_bytes(
+                    [
+                        chunk(b"fmt ", fmt_payload()),
+                        chunk(b"data", b"\x01\x02\x03\x04"),
+                        chunk(b"ID3 ", id3_payload([geob_frame(soundinfo_geob_data())])),
+                    ]
+                )
+            )
+            engine = create_engine("sqlite+pysqlite:///:memory:", future=True)
+            Base.metadata.create_all(engine)
+            with Session(engine) as session:
+                asset = AudioAsset(data_sha256="1" * 64, data_size=4)
+                file_instance = FileInstance(
+                    audio_asset=asset,
+                    path=str(path),
+                    file_name=path.name,
+                    suffix=".wav",
+                    file_size=path.stat().st_size,
+                    mtime_ns=path.stat().st_mtime_ns,
+                )
+                session.add(file_instance)
+                session.commit()
+                file_instance_id = file_instance.id
+
+                stored = validate_dataset_write_safety_to_db(session, root, batch_size=1)
+                scan_run = session.scalars(select(ScanRun).where(ScanRun.dataset_path.like("write-safety:%"))).one()
+                result = session.scalars(select(WriteSafetyResult)).one()
+
+            self.assertEqual(stored.status, "completed")
+            self.assertEqual(stored.result.scanned_files, 1)
+            self.assertEqual(scan_run.dataset_path, f"write-safety:{root}")
+            self.assertEqual(scan_run.scanned_files, 1)
+            self.assertEqual(result.file_instance_id, file_instance_id)
+            self.assertEqual(result.coverage_safety, "safe_to_rewrite")
+            self.assertEqual(result.write_safety, "safe_to_update_existing_metadata")
+            self.assertEqual(result.write_strategy, "preserve_audio_update_existing_id3_geob")
+            self.assertEqual(result.requirements["single_audio_data_chunk"], True)
+            self.assertEqual(result.normalizations, [])
+            self.assertEqual(result.blockers, [])
             engine.dispose()
 
 

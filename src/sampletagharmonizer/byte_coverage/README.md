@@ -34,6 +34,7 @@ It also maps nested Native Instruments metadata regions inside `ID3 ` chunks:
 - `summary.py`: compact single-file and dataset validation summaries.
 - `wav_map.py`: RIFF/WAVE byte map builder.
 - `validator.py`: generic top-level range validation and write-safety classification.
+- `write_policy.py`: read-only policy that classifies whether a file is structurally ready for future metadata writing.
 
 ## Hierarchy
 
@@ -102,6 +103,26 @@ sth validate-byte-coverage --dataset --store --summary-only
 
 This creates a `scan_runs` row with `dataset_path` prefixed by `byte-coverage:` and one `byte_coverage_results` row per scanned file. The database stores summaries only, not full region maps.
 
+Validate whether one WAV file is structurally ready for future metadata writing:
+
+```bash
+sth validate-write-safety "/path/to/file.wav" --pretty
+```
+
+Validate a dataset and include only files that are not currently writable by the conservative policy:
+
+```bash
+sth validate-write-safety --dataset --only-problematic --summary-only --pretty
+```
+
+Store compact dataset write-safety results in PostgreSQL:
+
+```bash
+sth validate-write-safety --dataset --store --summary-only
+```
+
+This creates a `scan_runs` row with `dataset_path` prefixed by `write-safety:` and one `write_safety_results` row per scanned file. Like byte coverage storage, this keeps compact summaries only.
+
 ## Safety Classification
 
 The current classification is intentionally conservative:
@@ -113,3 +134,28 @@ The current classification is intentionally conservative:
 | `invalid` | Error-level diagnostics were found. |
 
 This is not yet permission to write files. It is the first read-only safety layer that future writer code should depend on.
+
+## Write-Safety Policy
+
+`validate-write-safety` adds a second read-only layer on top of byte coverage. It does not modify files. It answers a narrower question: if a writer existed today, would this file be a structurally conservative candidate for updating existing NI metadata while preserving audio bytes?
+
+The first policy version is intentionally strict. A file is accepted for `safe_to_update_existing_metadata` only when all of these requirements are true:
+
+- coverage has no error-level diagnostics
+- all warning-level diagnostics are known tolerances
+- exactly one `data` audio payload was mapped
+- at least one `ID3 ` chunk was mapped
+- exactly one NI SoundInfo payload was mapped
+
+If warning-level tolerances were needed, the file can still be classified as `safe_with_normalization_to_update_existing_metadata`. In that case, `normalizations` lists the issues a future writer should fix while rewriting, for example missing chunk padding or tolerated RIFF-size mismatches.
+
+Files that do not satisfy the policy remain read-only or require manual review:
+
+| Write safety | Meaning |
+| --- | --- |
+| `safe_to_update_existing_metadata` | Existing ID3/GEOB/SoundInfo structure is unambiguous and no normalization is needed. |
+| `safe_with_normalization_to_update_existing_metadata` | Existing metadata can be targeted, but known tolerances should be normalized during rewrite. |
+| `review_required` | The structure is readable but ambiguous for automated writing, for example multiple NI SoundInfo payloads. |
+| `read_only` | The current writer policy must not modify this file. |
+
+The policy is expected to grow in stages. Future writer strategies may add support for appending a new `ID3 ` chunk to files without NI metadata, but that is deliberately not treated as safe in the first version.
