@@ -15,6 +15,9 @@ def iter_riff_chunks(path: Path, read_data_limit: int = 2_000_000) -> list[RiffC
         riff_end, actual_end = riff_bounds(path, header)
 
         while handle.tell() + 8 <= riff_end:
+            skip_zero_padding_before_chunk(handle, riff_end)
+            if handle.tell() + 8 > riff_end:
+                break
             offset = handle.tell()
             chunk_header = handle.read(8)
 
@@ -35,6 +38,22 @@ def iter_riff_chunks(path: Path, read_data_limit: int = 2_000_000) -> list[RiffC
     return chunks
 
 
+def skip_zero_padding_before_chunk(handle: BinaryIO, riff_end: int, max_padding: int = 32) -> None:
+    pos = handle.tell()
+    if looks_like_chunk_header_at(handle, pos, riff_end):
+        return
+
+    for skip in range(1, max_padding + 1):
+        candidate = pos + skip
+        if candidate + 8 > riff_end:
+            break
+        if not _all_zero_bytes(handle, pos, candidate):
+            break
+        if looks_like_chunk_header_at(handle, candidate, riff_end):
+            handle.seek(candidate)
+            return
+
+
 def advance_after_payload(handle: BinaryIO, size: int, riff_end: int, actual_end: int) -> None:
     if size % 2 == 0 or handle.tell() >= actual_end:
         return
@@ -47,7 +66,11 @@ def advance_after_payload(handle: BinaryIO, size: int, riff_end: int, actual_end
 
 
 def can_extend_to_actual_end(chunk_id: str, payload_end: int, actual_end: int) -> bool:
-    return chunk_id == "data" and payload_end <= actual_end
+    return payload_end <= actual_end and is_plausible_chunk_id(chunk_id)
+
+
+def is_plausible_chunk_id(chunk_id: str) -> bool:
+    return len(chunk_id) == 4 and all(32 <= ord(char) <= 126 for char in chunk_id)
 
 
 def looks_like_chunk_header_at(handle: BinaryIO, offset: int, riff_end: int) -> bool:
@@ -68,6 +91,16 @@ def looks_like_chunk_header_at(handle: BinaryIO, offset: int, riff_end: int) -> 
         return False
     size = int.from_bytes(header[4:8], "little")
     return offset + 8 + size <= riff_end
+
+
+def _all_zero_bytes(handle: BinaryIO, start: int, end: int) -> bool:
+    original = handle.tell()
+    try:
+        handle.seek(start)
+        data = handle.read(end - start)
+    finally:
+        handle.seek(original)
+    return all(byte == 0 for byte in data)
 
 
 def riff_bounds(path: Path, header: bytes) -> tuple[int, int]:

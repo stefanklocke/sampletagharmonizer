@@ -45,8 +45,23 @@ def inspect_wav(path: Path) -> dict[str, Any]:
                 if frame.frame_id == "GEOB":
                     geob = parse_geob_frame(frame.data)
                     if geob is not None:
-                        frame_info["geob"] = geob.to_dict()
-                        msgpack.extend(_msgpack_candidates_for_bytes(chunk, frame.data))
+                        frame_info["geob"] = {
+                            **geob.to_dict(),
+                            "source_chunk_id": chunk.chunk_id,
+                            "source_chunk_offset": chunk.offset,
+                            "source_frame_id": frame.frame_id,
+                            "source_frame_offset": frame.offset,
+                            "source_payload_offset": _soundinfo_payload_offset(frame.data),
+                            "source_payload_size": geob.payload_size,
+                        }
+                        msgpack.extend(
+                            _msgpack_candidates_for_bytes(
+                                chunk,
+                                frame.data,
+                                frame_id=frame.frame_id,
+                                frame_offset=frame.offset,
+                            )
+                        )
                 id3_frames.append(frame_info)
         else:
             msgpack.extend(_msgpack_candidates_for_chunk(chunk))
@@ -75,14 +90,29 @@ def _msgpack_candidates_for_chunk(chunk: RiffChunk) -> list[dict[str, Any]]:
     return _msgpack_candidates_for_bytes(chunk, chunk.data)
 
 
-def _msgpack_candidates_for_bytes(chunk: RiffChunk, data: bytes) -> list[dict[str, Any]]:
+def _msgpack_candidates_for_bytes(
+    chunk: RiffChunk,
+    data: bytes,
+    frame_id: str | None = None,
+    frame_offset: int | None = None,
+) -> list[dict[str, Any]]:
     results: list[dict[str, Any]] = []
     for candidate in find_msgpack_candidates(data):
         results.append(
             {
                 "chunk_id": chunk.chunk_id,
                 "chunk_offset": chunk.offset,
+                "frame_id": frame_id,
+                "frame_offset": frame_offset,
                 **candidate,
             }
         )
     return results
+
+
+def _soundinfo_payload_offset(data: bytes) -> int | None:
+    marker = NI_SOUNDINFO_MIME.encode("latin-1") + b"\x00"
+    marker_offset = data.find(marker)
+    if marker_offset < 0:
+        return None
+    return marker_offset + len(marker)

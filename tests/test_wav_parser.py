@@ -105,6 +105,38 @@ class WavParserTest(unittest.TestCase):
         self.assertEqual(identity.data_sha256, hashlib.sha256(audio).hexdigest())
         self.assertEqual(chunks[-1][0], "data")
 
+    def test_tolerates_final_metadata_chunk_beyond_underdeclared_riff_end(self) -> None:
+        audio = b"\x01\x02\x03\x04"
+        data = wav_bytes(
+            [
+                chunk(b"fmt ", fmt_payload()),
+                chunk(b"data", audio),
+                chunk(b"ID3 ", b"metadata"),
+            ],
+            riff_size_delta=-4,
+        )
+
+        identity, chunks = self.parse_temp(data)
+
+        self.assertEqual(identity.data_sha256, hashlib.sha256(audio).hexdigest())
+        self.assertEqual(chunks[-1][0], "ID3 ")
+
+    def test_tolerates_extra_zero_padding_before_valid_chunk(self) -> None:
+        audio = b"\x01\x02\x03"
+        data = wav_bytes(
+            [
+                chunk(b"fmt ", fmt_payload()),
+                chunk(b"data", audio, pad=False),
+                b"\x00" * 12,
+                chunk(b"ID3 ", b"metadata"),
+            ]
+        )
+
+        identity, chunks = self.parse_temp(data)
+
+        self.assertEqual(identity.data_sha256, hashlib.sha256(audio).hexdigest())
+        self.assertEqual(chunks[-1][0], "ID3 ")
+
 
 if __name__ == "__main__":
     unittest.main()

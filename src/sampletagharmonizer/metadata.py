@@ -1,0 +1,23 @@
+from __future__ import annotations
+
+SOURCE_NI_SOUNDINFO_UTF16 = "ni_soundinfo_utf16"
+SOURCE_NI_MSGPACK = "ni_msgpack"
+
+METADATA_FILE_STATUS_OBSERVED = "observed"
+METADATA_FILE_STATUS_NO_METADATA = "no_metadata"
+METADATA_FILE_STATUS_ERROR = "error"
+
+METADATA_SOURCE_TYPES = frozenset(
+    [
+        SOURCE_NI_SOUNDINFO_UTF16,
+        SOURCE_NI_MSGPACK,
+    ]
+)
+
+METADATA_FILE_STATUSES = frozenset(
+    [
+        METADATA_FILE_STATUS_OBSERVED,
+        METADATA_FILE_STATUS_NO_METADATA,
+        METADATA_FILE_STATUS_ERROR,
+    ]
+)
