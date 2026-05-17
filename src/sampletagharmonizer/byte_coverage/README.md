@@ -30,6 +30,8 @@ It also maps nested Native Instruments metadata regions inside `ID3 ` chunks:
 
 - `models.py`: serializable byte-region, diagnostic, and map models.
 - `id3_map.py`: nested ID3, GEOB, SoundInfo, UTF-16LE string, and MessagePack regions.
+- `storage.py`: compact PostgreSQL audit storage for dataset validation runs.
+- `summary.py`: compact single-file and dataset validation summaries.
 - `wav_map.py`: RIFF/WAVE byte map builder.
 - `validator.py`: generic top-level range validation and write-safety classification.
 
@@ -73,6 +75,32 @@ Write the JSON report to a file:
 ```bash
 sth byte-map "/path/to/file.wav" --pretty --output report.json
 ```
+
+Generate a compact validation report for one WAV file:
+
+```bash
+sth validate-byte-coverage "/path/to/file.wav" --pretty
+```
+
+Validate a dataset configured through `DATASET_PATH_NI`:
+
+```bash
+sth validate-byte-coverage --dataset --summary-only --pretty
+```
+
+Validate a small subset and include only problematic files in the file list:
+
+```bash
+sth validate-byte-coverage --dataset --limit 100 --only-problematic --pretty
+```
+
+Store compact dataset validation results in PostgreSQL:
+
+```bash
+sth validate-byte-coverage --dataset --store --summary-only
+```
+
+This creates a `scan_runs` row with `dataset_path` prefixed by `byte-coverage:` and one `byte_coverage_results` row per scanned file. The database stores summaries only, not full region maps.
 
 ## Safety Classification
 

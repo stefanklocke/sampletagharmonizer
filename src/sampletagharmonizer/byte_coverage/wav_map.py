@@ -107,6 +107,28 @@ def _effective_riff_end(
         )
         return file_size
     if file_size < declared_riff_end:
+        if declared_riff_end == file_size + 1:
+            diagnostics.append(
+                CoverageDiagnostic(
+                    severity="warning",
+                    code="declared_riff_end_one_byte_beyond_file",
+                    message="Declared RIFF end is one byte beyond the physical file end; treating this as a known size tolerance.",
+                    offset=file_size,
+                    metadata={"declared_riff_end": declared_riff_end, "missing_bytes": 1, "rewrite_can_normalize": True},
+                )
+            )
+            return file_size
+        if declared_riff_end == file_size + 8:
+            diagnostics.append(
+                CoverageDiagnostic(
+                    severity="warning",
+                    code="declared_riff_end_one_header_beyond_file",
+                    message="Declared RIFF end is eight bytes beyond the physical file end; treating this as a known missing trailing-header tolerance.",
+                    offset=file_size,
+                    metadata={"declared_riff_end": declared_riff_end, "missing_bytes": 8, "rewrite_can_normalize": True},
+                )
+            )
+            return file_size
         diagnostics.append(
             CoverageDiagnostic(
                 severity="error",
@@ -156,15 +178,27 @@ def _parse_chunks(
         if offset >= effective_riff_end:
             break
         if offset + 8 > effective_riff_end:
-            diagnostics.append(
-                CoverageDiagnostic(
-                    severity="error",
-                    code="truncated_chunk_header",
-                    message="Not enough bytes remain for a RIFF chunk header.",
-                    offset=offset,
+            if _all_zero_bytes(handle, offset, effective_riff_end):
+                diagnostics.append(
+                    CoverageDiagnostic(
+                        severity="warning",
+                        code="trailing_zero_padding",
+                        message="Remaining bytes are too short for a RIFF chunk header and contain only zeros; treating them as trailing padding.",
+                        offset=offset,
+                        metadata={"start": offset, "end": effective_riff_end, "size": effective_riff_end - offset, "rewrite_can_normalize": True},
+                    )
                 )
-            )
-            regions.append(_region(f"trailing_bytes_{offset}", offset, effective_riff_end, "unknown", "Trailing bytes"))
+                regions.append(_region(f"trailing_zero_padding_{offset}", offset, effective_riff_end, "padding", "Trailing zero padding"))
+            else:
+                diagnostics.append(
+                    CoverageDiagnostic(
+                        severity="error",
+                        code="truncated_chunk_header",
+                        message="Not enough bytes remain for a RIFF chunk header.",
+                        offset=offset,
+                    )
+                )
+                regions.append(_region(f"trailing_bytes_{offset}", offset, effective_riff_end, "unknown", "Trailing bytes"))
             handle.seek(effective_riff_end)
             break
 

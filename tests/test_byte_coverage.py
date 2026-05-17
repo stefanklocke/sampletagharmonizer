@@ -4,7 +4,12 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from sampletagharmonizer.byte_coverage import build_wav_byte_map
+from sqlalchemy import create_engine, select
+from sqlalchemy.orm import Session
+
+from sampletagharmonizer.byte_coverage import build_wav_byte_map, validate_byte_coverage, validate_dataset_byte_coverage
+from sampletagharmonizer.byte_coverage.storage import validate_dataset_byte_coverage_to_db
+from sampletagharmonizer.db.models import AudioAsset, Base, ByteCoverageResult, FileInstance, ScanRun
 from sampletagharmonizer.parsers.ni_metadata import NI_SOUNDINFO_MIME
 
 
@@ -163,6 +168,65 @@ class ByteCoverageTest(unittest.TestCase):
         self.assertEqual(coverage.safety, "invalid")
         self.assertIn("truncated_chunk_payload", {diagnostic.code for diagnostic in coverage.diagnostics})
 
+    def test_tolerates_short_trailing_zero_padding(self) -> None:
+        coverage = self.build_map(
+            wav_bytes(
+                [
+                    chunk(b"fmt ", fmt_payload()),
+                    chunk(b"data", b"\x01\x02\x03\x04"),
+                ],
+                riff_size_delta=5,
+            )
+            + b"\x00" * 5
+        )
+
+        self.assertEqual(coverage.safety, "safe_with_known_tolerances")
+        self.assertIn("trailing_zero_padding", {diagnostic.code for diagnostic in coverage.diagnostics})
+        self.assertTrue(any(region.kind == "padding" and region.label == "Trailing zero padding" for region in coverage.regions))
+
+    def test_reports_short_nonzero_trailing_bytes_as_truncated_header(self) -> None:
+        coverage = self.build_map(
+            wav_bytes(
+                [
+                    chunk(b"fmt ", fmt_payload()),
+                    chunk(b"data", b"\x01\x02\x03\x04"),
+                ],
+                riff_size_delta=3,
+            )
+            + b"\x01\x02\x03"
+        )
+
+        self.assertEqual(coverage.safety, "invalid")
+        self.assertIn("truncated_chunk_header", {diagnostic.code for diagnostic in coverage.diagnostics})
+
+    def test_tolerates_declared_riff_end_one_byte_beyond_file(self) -> None:
+        coverage = self.build_map(
+            wav_bytes(
+                [
+                    chunk(b"fmt ", fmt_payload()),
+                    chunk(b"data", b"\x01\x02\x03\x04"),
+                ],
+                riff_size_delta=1,
+            )
+        )
+
+        self.assertEqual(coverage.safety, "safe_with_known_tolerances")
+        self.assertIn("declared_riff_end_one_byte_beyond_file", {diagnostic.code for diagnostic in coverage.diagnostics})
+
+    def test_tolerates_declared_riff_end_one_header_beyond_file(self) -> None:
+        coverage = self.build_map(
+            wav_bytes(
+                [
+                    chunk(b"fmt ", fmt_payload()),
+                    chunk(b"data", b"\x01\x02\x03\x04"),
+                ],
+                riff_size_delta=8,
+            )
+        )
+
+        self.assertEqual(coverage.safety, "safe_with_known_tolerances")
+        self.assertIn("declared_riff_end_one_header_beyond_file", {diagnostic.code for diagnostic in coverage.diagnostics})
+
     def test_maps_nested_id3_geob_soundinfo_regions(self) -> None:
         coverage = self.build_map(
             wav_bytes(
@@ -206,6 +270,95 @@ class ByteCoverageTest(unittest.TestCase):
         self.assertEqual(coverage.safety, "safe_to_rewrite")
         self.assertEqual(len(candidates), 1)
         self.assertEqual(candidates[0].metadata["keys"], ["name", "vendor"])
+
+    def test_validates_single_file_summary(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "sample.wav"
+            path.write_bytes(
+                wav_bytes(
+                    [
+                        chunk(b"fmt ", fmt_payload()),
+                        chunk(b"data", b"\x01\x02\x03\x04"),
+                    ]
+                )
+            )
+
+            validation = validate_byte_coverage(path)
+
+        self.assertEqual(validation.safety, "safe_to_rewrite")
+        self.assertEqual(validation.diagnostic_count, 0)
+        self.assertEqual(validation.diagnostics_by_code, {})
+        self.assertEqual(validation.diagnostics_by_severity, {})
+
+    def test_validates_dataset_summary_with_problem_filter(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "safe.wav").write_bytes(
+                wav_bytes(
+                    [
+                        chunk(b"fmt ", fmt_payload()),
+                        chunk(b"data", b"\x01\x02\x03\x04"),
+                    ]
+                )
+            )
+            (root / "invalid.wav").write_bytes(
+                wav_bytes(
+                    [
+                        chunk(b"fmt ", fmt_payload()),
+                        b"data" + (8).to_bytes(4, "little") + b"\x01\x02",
+                    ]
+                )
+            )
+
+            validation = validate_dataset_byte_coverage(root, only_problematic=True)
+
+        self.assertEqual(validation.scanned_files, 2)
+        self.assertEqual(validation.failed_files, 0)
+        self.assertEqual(validation.files_by_safety, {"invalid": 1, "safe_to_rewrite": 1})
+        self.assertEqual(validation.diagnostics_by_code, {"truncated_chunk_payload": 1})
+        self.assertEqual([Path(item.path).name for item in validation.files], ["invalid.wav"])
+
+    def test_stores_dataset_validation_results(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            path = root / "safe.wav"
+            path.write_bytes(
+                wav_bytes(
+                    [
+                        chunk(b"fmt ", fmt_payload()),
+                        chunk(b"data", b"\x01\x02\x03\x04"),
+                    ]
+                )
+            )
+            engine = create_engine("sqlite+pysqlite:///:memory:", future=True)
+            Base.metadata.create_all(engine)
+            with Session(engine) as session:
+                asset = AudioAsset(data_sha256="0" * 64, data_size=4)
+                file_instance = FileInstance(
+                    audio_asset=asset,
+                    path=str(path),
+                    file_name=path.name,
+                    suffix=".wav",
+                    file_size=path.stat().st_size,
+                    mtime_ns=path.stat().st_mtime_ns,
+                )
+                session.add(file_instance)
+                session.commit()
+                file_instance_id = file_instance.id
+
+                stored = validate_dataset_byte_coverage_to_db(session, root, batch_size=1)
+                scan_run = session.scalars(select(ScanRun)).one()
+                result = session.scalars(select(ByteCoverageResult)).one()
+
+            self.assertEqual(stored.status, "completed")
+            self.assertEqual(stored.result.scanned_files, 1)
+            self.assertEqual(scan_run.dataset_path, f"byte-coverage:{root}")
+            self.assertEqual(scan_run.scanned_files, 1)
+            self.assertEqual(result.file_instance_id, file_instance_id)
+            self.assertEqual(result.coverage_safety, "safe_to_rewrite")
+            self.assertEqual(result.diagnostic_count, 0)
+            self.assertIn("audio", result.region_counts_by_kind)
+            engine.dispose()
 
 
 if __name__ == "__main__":
