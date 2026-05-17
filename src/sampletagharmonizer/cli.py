@@ -50,6 +50,19 @@ def scan(args: argparse.Namespace) -> int:
     return 0
 
 
+def byte_map(args: argparse.Namespace) -> int:
+    from .byte_coverage import build_wav_byte_map
+
+    report = build_wav_byte_map(args.path)
+    text = json.dumps(report.to_dict(), ensure_ascii=False, indent=2 if args.pretty else None)
+    if args.output:
+        args.output.parent.mkdir(parents=True, exist_ok=True)
+        args.output.write_text(text + "\n", encoding="utf-8")
+    else:
+        print(text)
+    return 0
+
+
 def init_db(args: argparse.Namespace) -> int:
     from .db.schema import create_schema
 
@@ -309,6 +322,12 @@ def build_parser() -> argparse.ArgumentParser:
     scan_parser.add_argument("--output", type=Path, help="Write JSON report to this file.")
     scan_parser.add_argument("--pretty", action="store_true", help="Pretty-print JSON output.")
     scan_parser.set_defaults(func=scan)
+
+    byte_map_parser = subparsers.add_parser("byte-map", help="Generate a read-only byte coverage map for one WAV file.")
+    byte_map_parser.add_argument("path", type=Path, help="WAV file to inspect.")
+    byte_map_parser.add_argument("--output", type=Path, help="Write JSON report to this file.")
+    byte_map_parser.add_argument("--pretty", action="store_true", help="Pretty-print JSON output.")
+    byte_map_parser.set_defaults(func=byte_map)
 
     return parser
 
