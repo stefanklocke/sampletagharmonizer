@@ -26,9 +26,10 @@ The planner:
 - runs write-safety validation
 - computes the source audio `data` chunk hash
 - locates the target ID3 chunk, GEOB frame, and NI SoundInfo payload
-- marks byte ranges to preserve
+- marks byte ranges to copy from the source
+- marks byte ranges that must remain byte-identical after writing
 - marks the existing GEOB frame as the future replacement range
-- lists container size fields that a future writer must recalculate
+- lists container size fields that a future writer must patch
 
 It does not write files.
 

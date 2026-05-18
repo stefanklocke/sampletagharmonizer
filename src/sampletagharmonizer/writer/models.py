@@ -70,9 +70,10 @@ class WritePlan:
     source_audio_sha256: str
     source_audio_size: int
     target_regions: list[dict[str, Any]]
-    preserve_ranges: list[ByteRangePlan]
+    copy_ranges: list[ByteRangePlan]
+    immutable_ranges: list[ByteRangePlan]
     replace_ranges: list[ByteRangePlan]
-    size_fields_to_recalculate: list[SizeFieldPlan]
+    patch_fields: list[SizeFieldPlan]
     normalizations: list[str]
     preconditions: dict[str, bool]
 
@@ -86,9 +87,10 @@ class WritePlan:
             "source_audio_sha256": self.source_audio_sha256,
             "source_audio_size": self.source_audio_size,
             "target_regions": self.target_regions,
-            "preserve_ranges": [item.to_dict() for item in self.preserve_ranges],
+            "copy_ranges": [item.to_dict() for item in self.copy_ranges],
+            "immutable_ranges": [item.to_dict() for item in self.immutable_ranges],
             "replace_ranges": [item.to_dict() for item in self.replace_ranges],
-            "size_fields_to_recalculate": [item.to_dict() for item in self.size_fields_to_recalculate],
+            "patch_fields": [item.to_dict() for item in self.patch_fields],
             "normalizations": self.normalizations,
             "preconditions": self.preconditions,
         }

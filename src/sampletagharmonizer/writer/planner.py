@@ -38,21 +38,23 @@ def plan_existing_id3_geob_update(source_path: Path, output_path: Path) -> Write
         source_audio_sha256=audio_identity.data_sha256,
         source_audio_size=audio_identity.data_size,
         target_regions=regions.to_target_region_dicts(),
-        preserve_ranges=[
+        copy_ranges=[
             ByteRangePlan(
-                id="preserve_before_target_geob_frame",
+                id="copy_before_target_geob_frame",
                 start=0,
                 end=replace_start,
                 purpose="copy_source_bytes_before_generated_geob_frame",
             ),
             ByteRangePlan(
-                id="preserve_after_target_geob_frame",
+                id="copy_after_target_geob_frame",
                 start=replace_end,
                 end=coverage_map.file_size,
                 purpose="copy_source_bytes_after_generated_geob_frame",
             ),
+        ],
+        immutable_ranges=[
             ByteRangePlan(
-                id="preserve_audio_data_payload",
+                id="immutable_audio_data_payload",
                 start=regions.audio_payload.start,
                 end=regions.audio_payload.end,
                 purpose="audio_bytes_must_remain_identical",
@@ -74,7 +76,7 @@ def plan_existing_id3_geob_update(source_path: Path, output_path: Path) -> Write
                 },
             )
         ],
-        size_fields_to_recalculate=[
+        patch_fields=[
             SizeFieldPlan(
                 id="riff_size",
                 start=4,

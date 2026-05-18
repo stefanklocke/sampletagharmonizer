@@ -93,10 +93,17 @@ class WriterPlannerTest(unittest.TestCase):
         self.assertEqual(plan.coverage_safety, "safe_to_rewrite")
         self.assertEqual(plan.source_audio_sha256, hashlib.sha256(audio).hexdigest())
         self.assertEqual(plan.source_audio_size, len(audio))
-        self.assertEqual([item.id for item in plan.replace_ranges], ["replace_target_geob_frame"])
-        self.assertIn("preserve_audio_data_payload", [item.id for item in plan.preserve_ranges])
         self.assertEqual(
-            [field.id for field in plan.size_fields_to_recalculate],
+            [item.id for item in plan.copy_ranges],
+            ["copy_before_target_geob_frame", "copy_after_target_geob_frame"],
+        )
+        self.assertEqual(plan.copy_ranges[0].end, plan.replace_ranges[0].start)
+        self.assertEqual(plan.copy_ranges[1].start, plan.replace_ranges[0].end)
+        self.assertEqual([item.id for item in plan.replace_ranges], ["replace_target_geob_frame"])
+        self.assertIn("immutable_audio_data_payload", [item.id for item in plan.immutable_ranges])
+        self.assertEqual(plan.immutable_ranges[0].metadata["sha256"], hashlib.sha256(audio).hexdigest())
+        self.assertEqual(
+            [field.id for field in plan.patch_fields],
             [
                 "riff_size",
                 "id3_chunk_payload_size",
