@@ -196,6 +196,34 @@ def validate_write_safety(args: argparse.Namespace) -> int:
     return 0
 
 
+def write_safety_samples(args: argparse.Namespace) -> int:
+    from .config import database_url_from_env
+    from .db.session import session_scope
+    from .services.write_safety_samples import collect_write_safety_samples
+
+    database_url = args.database_url or database_url_from_env(args.env)
+    with session_scope(database_url, args.env) as session:
+        try:
+            output = collect_write_safety_samples(
+                session=session,
+                scan_run_id=args.scan_run_id,
+                per_strategy=args.per_strategy,
+                write_safety=args.write_safety,
+                write_strategy=args.write_strategy,
+                include_raw=args.include_raw,
+            )
+        except ValueError as exc:
+            raise SystemExit(str(exc)) from exc
+
+    text = json.dumps(output, ensure_ascii=False, indent=2 if args.pretty else None)
+    if args.output:
+        args.output.parent.mkdir(parents=True, exist_ok=True)
+        args.output.write_text(text + "\n", encoding="utf-8")
+    else:
+        print(text)
+    return 0
+
+
 def init_db(args: argparse.Namespace) -> int:
     from .db.schema import create_schema
 
@@ -493,6 +521,18 @@ def build_parser() -> argparse.ArgumentParser:
     write_safety_parser.add_argument("--output", type=Path, help="Write JSON report to this file.")
     write_safety_parser.add_argument("--pretty", action="store_true", help="Pretty-print JSON output.")
     write_safety_parser.set_defaults(func=validate_write_safety)
+
+    write_safety_samples_parser = subparsers.add_parser("write-safety-samples", help="Sample files by write-safety strategy from stored PostgreSQL results.")
+    write_safety_samples_parser.add_argument("--scan-run-id", help="Write-safety scan run to inspect. Defaults to the latest write-safety run.")
+    write_safety_samples_parser.add_argument("--env", type=Path, default=Path(".env"), help="Dotenv file containing DATABASE_URL.")
+    write_safety_samples_parser.add_argument("--database-url", help="SQLAlchemy database URL. Overrides DATABASE_URL.")
+    write_safety_samples_parser.add_argument("--per-strategy", type=int, default=5, help="Number of sample files to include per write strategy.")
+    write_safety_samples_parser.add_argument("--write-safety", help="Filter to one write_safety value.")
+    write_safety_samples_parser.add_argument("--write-strategy", help="Filter to one write_strategy value.")
+    write_safety_samples_parser.add_argument("--include-raw", action="store_true", help="Include raw stored summaries for each sample.")
+    write_safety_samples_parser.add_argument("--output", type=Path, help="Write JSON report to this file.")
+    write_safety_samples_parser.add_argument("--pretty", action="store_true", help="Pretty-print JSON output.")
+    write_safety_samples_parser.set_defaults(func=write_safety_samples)
 
     return parser
 

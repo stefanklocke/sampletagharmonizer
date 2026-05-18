@@ -9,6 +9,7 @@ This package contains workflow-level services. Services coordinate parsers, data
 - `files.py`: filesystem iteration helpers.
 - `indexer.py`: WAV dataset indexing, audio identity upsert, indexing retries, and indexing resume.
 - `metadata_observer.py`: NI metadata extraction from indexed files, metadata retries, and metadata resume.
+- `write_safety_samples.py`: read-only sample reports from stored write-safety results.
 
 ## Dataset Indexing
 
@@ -133,3 +134,27 @@ sth extract-metadata --batch-size 500
 ```
 
 A batch size greater than zero updates the active `scan_runs` row and commits pending database changes every N scanned files. This limits work lost on interruption and makes long NAS-backed scans safer.
+
+## Write-Safety Samples
+
+`write_safety_samples.py` reads stored `write_safety_results` rows and returns a compact sample set per write strategy. This is used for manual policy inspection before implementing any writer.
+
+Typical CLI use:
+
+```bash
+sth write-safety-samples --pretty
+```
+
+Inspect a specific run and include three files per strategy:
+
+```bash
+sth write-safety-samples --scan-run-id <scan_run_id> --per-strategy 3 --pretty
+```
+
+Focus on one strategy:
+
+```bash
+sth write-safety-samples --write-strategy unsupported_missing_id3_chunk --pretty
+```
+
+The command does not parse WAV files and does not modify the database. It only reads the latest or selected `write-safety:` scan run.
