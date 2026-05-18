@@ -50,6 +50,180 @@ def scan(args: argparse.Namespace) -> int:
     return 0
 
 
+def byte_map(args: argparse.Namespace) -> int:
+    from .byte_coverage import build_wav_byte_map
+
+    report = build_wav_byte_map(args.path)
+    text = json.dumps(report.to_dict(), ensure_ascii=False, indent=2 if args.pretty else None)
+    if args.output:
+        args.output.parent.mkdir(parents=True, exist_ok=True)
+        args.output.write_text(text + "\n", encoding="utf-8")
+    else:
+        print(text)
+    return 0
+
+
+def validate_byte_coverage(args: argparse.Namespace) -> int:
+    from .config import database_url_from_env
+    from .byte_coverage import validate_byte_coverage as validate_file_byte_coverage
+    from .byte_coverage import validate_dataset_byte_coverage
+
+    if args.dataset:
+        if args.store:
+            from .byte_coverage import validate_dataset_byte_coverage_to_db
+            from .db.session import session_scope
+
+        root = args.path or dataset_path_from_env(args.env)
+        if not root.exists():
+            raise SystemExit(f"Dataset path does not exist: {root}")
+        if not root.is_dir():
+            raise SystemExit(f"Dataset path is not a directory: {root}")
+
+        progress = None
+        if not args.no_progress:
+            from .services.indexer import count_wav_files
+
+            sys.stderr.write("Counting WAV files...\n")
+            sys.stderr.flush()
+            progress = ProgressBar(count_wav_files(root, args.limit), success_label="safe")
+            progress.render(0, 0, 0)
+
+        if args.store:
+            database_url = args.database_url or database_url_from_env(args.env)
+            with session_scope(database_url, args.env) as session:
+                stored_result = validate_dataset_byte_coverage_to_db(
+                    session=session,
+                    root=root,
+                    limit=args.limit,
+                    only_problematic=args.only_problematic,
+                    progress=progress,
+                    batch_size=args.batch_size,
+                )
+            result = stored_result.result
+        else:
+            result = validate_dataset_byte_coverage(
+                root=root,
+                limit=args.limit,
+                only_problematic=args.only_problematic,
+                progress=progress,
+            )
+        if progress is not None:
+            progress.finish(result.scanned_files, result.files_by_safety.get("safe_to_rewrite", 0), result.failed_files)
+        if args.store:
+            output = stored_result.to_dict(include_files=not args.summary_only, include_diagnostics=not args.no_diagnostics)
+        else:
+            output = result.to_dict(include_files=not args.summary_only, include_diagnostics=not args.no_diagnostics)
+    else:
+        if args.store:
+            raise SystemExit("--store is only supported with --dataset.")
+        if args.path is None:
+            raise SystemExit("A WAV file path is required unless --dataset is set.")
+        output = validate_file_byte_coverage(args.path).to_dict(include_diagnostics=not args.no_diagnostics)
+
+    text = json.dumps(output, ensure_ascii=False, indent=2 if args.pretty else None)
+    if args.output:
+        args.output.parent.mkdir(parents=True, exist_ok=True)
+        args.output.write_text(text + "\n", encoding="utf-8")
+    else:
+        print(text)
+    return 0
+
+
+def validate_write_safety(args: argparse.Namespace) -> int:
+    from .config import database_url_from_env
+    from .byte_coverage import validate_dataset_write_safety
+    from .byte_coverage import validate_write_safety as validate_file_write_safety
+
+    if args.dataset:
+        if args.store:
+            from .byte_coverage import validate_dataset_write_safety_to_db
+            from .db.session import session_scope
+
+        root = args.path or dataset_path_from_env(args.env)
+        if not root.exists():
+            raise SystemExit(f"Dataset path does not exist: {root}")
+        if not root.is_dir():
+            raise SystemExit(f"Dataset path is not a directory: {root}")
+
+        progress = None
+        if not args.no_progress:
+            from .services.indexer import count_wav_files
+
+            sys.stderr.write("Counting WAV files...\n")
+            sys.stderr.flush()
+            progress = ProgressBar(count_wav_files(root, args.limit), success_label="writable")
+            progress.render(0, 0, 0)
+
+        if args.store:
+            database_url = args.database_url or database_url_from_env(args.env)
+            with session_scope(database_url, args.env) as session:
+                stored_result = validate_dataset_write_safety_to_db(
+                    session=session,
+                    root=root,
+                    limit=args.limit,
+                    only_problematic=args.only_problematic,
+                    progress=progress,
+                    batch_size=args.batch_size,
+                )
+            result = stored_result.result
+        else:
+            result = validate_dataset_write_safety(
+                root=root,
+                limit=args.limit,
+                only_problematic=args.only_problematic,
+                progress=progress,
+            )
+        if progress is not None:
+            writable = sum(count for safety, count in result.files_by_write_safety.items() if safety.startswith("safe"))
+            progress.finish(result.scanned_files, writable, result.failed_files)
+        if args.store:
+            output = stored_result.to_dict(include_files=not args.summary_only, include_diagnostics=not args.no_diagnostics)
+        else:
+            output = result.to_dict(include_files=not args.summary_only, include_diagnostics=not args.no_diagnostics)
+    else:
+        if args.store:
+            raise SystemExit("--store is only supported with --dataset.")
+        if args.path is None:
+            raise SystemExit("A WAV file path is required unless --dataset is set.")
+        output = validate_file_write_safety(args.path).to_dict(include_diagnostics=not args.no_diagnostics)
+
+    text = json.dumps(output, ensure_ascii=False, indent=2 if args.pretty else None)
+    if args.output:
+        args.output.parent.mkdir(parents=True, exist_ok=True)
+        args.output.write_text(text + "\n", encoding="utf-8")
+    else:
+        print(text)
+    return 0
+
+
+def write_safety_samples(args: argparse.Namespace) -> int:
+    from .config import database_url_from_env
+    from .db.session import session_scope
+    from .services.write_safety_samples import collect_write_safety_samples
+
+    database_url = args.database_url or database_url_from_env(args.env)
+    with session_scope(database_url, args.env) as session:
+        try:
+            output = collect_write_safety_samples(
+                session=session,
+                scan_run_id=args.scan_run_id,
+                per_strategy=args.per_strategy,
+                write_safety=args.write_safety,
+                write_strategy=args.write_strategy,
+                include_raw=args.include_raw,
+            )
+        except ValueError as exc:
+            raise SystemExit(str(exc)) from exc
+
+    text = json.dumps(output, ensure_ascii=False, indent=2 if args.pretty else None)
+    if args.output:
+        args.output.parent.mkdir(parents=True, exist_ok=True)
+        args.output.write_text(text + "\n", encoding="utf-8")
+    else:
+        print(text)
+    return 0
+
+
 def init_db(args: argparse.Namespace) -> int:
     from .db.schema import create_schema
 
@@ -309,6 +483,56 @@ def build_parser() -> argparse.ArgumentParser:
     scan_parser.add_argument("--output", type=Path, help="Write JSON report to this file.")
     scan_parser.add_argument("--pretty", action="store_true", help="Pretty-print JSON output.")
     scan_parser.set_defaults(func=scan)
+
+    byte_map_parser = subparsers.add_parser("byte-map", help="Generate a read-only byte coverage map for one WAV file.")
+    byte_map_parser.add_argument("path", type=Path, help="WAV file to inspect.")
+    byte_map_parser.add_argument("--output", type=Path, help="Write JSON report to this file.")
+    byte_map_parser.add_argument("--pretty", action="store_true", help="Pretty-print JSON output.")
+    byte_map_parser.set_defaults(func=byte_map)
+
+    coverage_parser = subparsers.add_parser("validate-byte-coverage", help="Validate byte coverage safety for one WAV file or a dataset.")
+    coverage_parser.add_argument("path", nargs="?", type=Path, help="WAV file or dataset root. Defaults to DATASET_PATH_NI when --dataset is set.")
+    coverage_parser.add_argument("--dataset", action="store_true", help="Validate all WAV files under the dataset root.")
+    coverage_parser.add_argument("--env", type=Path, default=Path(".env"), help="Dotenv file containing DATASET_PATH_NI.")
+    coverage_parser.add_argument("--database-url", help="SQLAlchemy database URL. Overrides DATABASE_URL when --store is set.")
+    coverage_parser.add_argument("--limit", type=int, help="Maximum number of WAV files to validate in dataset mode.")
+    coverage_parser.add_argument("--batch-size", type=int, default=500, help="Commit stored coverage results every N scanned files.")
+    coverage_parser.add_argument("--store", action="store_true", help="Store compact dataset validation results in PostgreSQL.")
+    coverage_parser.add_argument("--only-problematic", action="store_true", help="In dataset mode, include only non-safe files in the file list.")
+    coverage_parser.add_argument("--summary-only", action="store_true", help="In dataset mode, omit the per-file list.")
+    coverage_parser.add_argument("--no-diagnostics", action="store_true", help="Omit detailed diagnostic objects from output.")
+    coverage_parser.add_argument("--no-progress", action="store_true", help="Disable the console progress bar in dataset mode.")
+    coverage_parser.add_argument("--output", type=Path, help="Write JSON report to this file.")
+    coverage_parser.add_argument("--pretty", action="store_true", help="Pretty-print JSON output.")
+    coverage_parser.set_defaults(func=validate_byte_coverage)
+
+    write_safety_parser = subparsers.add_parser("validate-write-safety", help="Validate whether a WAV file or dataset is structurally ready for future metadata writing.")
+    write_safety_parser.add_argument("path", nargs="?", type=Path, help="WAV file or dataset root. Defaults to DATASET_PATH_NI when --dataset is set.")
+    write_safety_parser.add_argument("--dataset", action="store_true", help="Validate all WAV files under the dataset root.")
+    write_safety_parser.add_argument("--env", type=Path, default=Path(".env"), help="Dotenv file containing DATASET_PATH_NI.")
+    write_safety_parser.add_argument("--database-url", help="SQLAlchemy database URL. Overrides DATABASE_URL when --store is set.")
+    write_safety_parser.add_argument("--limit", type=int, help="Maximum number of WAV files to validate in dataset mode.")
+    write_safety_parser.add_argument("--batch-size", type=int, default=500, help="Commit stored write-safety results every N scanned files.")
+    write_safety_parser.add_argument("--store", action="store_true", help="Store compact dataset write-safety results in PostgreSQL.")
+    write_safety_parser.add_argument("--only-problematic", action="store_true", help="In dataset mode, include only non-writable files in the file list.")
+    write_safety_parser.add_argument("--summary-only", action="store_true", help="In dataset mode, omit the per-file list.")
+    write_safety_parser.add_argument("--no-diagnostics", action="store_true", help="Omit detailed coverage diagnostic objects from output.")
+    write_safety_parser.add_argument("--no-progress", action="store_true", help="Disable the console progress bar in dataset mode.")
+    write_safety_parser.add_argument("--output", type=Path, help="Write JSON report to this file.")
+    write_safety_parser.add_argument("--pretty", action="store_true", help="Pretty-print JSON output.")
+    write_safety_parser.set_defaults(func=validate_write_safety)
+
+    write_safety_samples_parser = subparsers.add_parser("write-safety-samples", help="Sample files by write-safety strategy from stored PostgreSQL results.")
+    write_safety_samples_parser.add_argument("--scan-run-id", help="Write-safety scan run to inspect. Defaults to the latest write-safety run.")
+    write_safety_samples_parser.add_argument("--env", type=Path, default=Path(".env"), help="Dotenv file containing DATABASE_URL.")
+    write_safety_samples_parser.add_argument("--database-url", help="SQLAlchemy database URL. Overrides DATABASE_URL.")
+    write_safety_samples_parser.add_argument("--per-strategy", type=int, default=5, help="Number of sample files to include per write strategy.")
+    write_safety_samples_parser.add_argument("--write-safety", help="Filter to one write_safety value.")
+    write_safety_samples_parser.add_argument("--write-strategy", help="Filter to one write_strategy value.")
+    write_safety_samples_parser.add_argument("--include-raw", action="store_true", help="Include raw stored summaries for each sample.")
+    write_safety_samples_parser.add_argument("--output", type=Path, help="Write JSON report to this file.")
+    write_safety_samples_parser.add_argument("--pretty", action="store_true", help="Pretty-print JSON output.")
+    write_safety_samples_parser.set_defaults(func=write_safety_samples)
 
     return parser
 

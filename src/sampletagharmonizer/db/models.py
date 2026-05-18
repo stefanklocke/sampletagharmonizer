@@ -40,6 +40,8 @@ class ScanRun(Base):
     errors: Mapped[list[ScanError]] = relationship(back_populates="scan_run")
     metadata_observations: Mapped[list[MetadataObservation]] = relationship(back_populates="scan_run")
     metadata_file_results: Mapped[list[MetadataFileResult]] = relationship(back_populates="scan_run")
+    byte_coverage_results: Mapped[list[ByteCoverageResult]] = relationship(back_populates="scan_run")
+    write_safety_results: Mapped[list[WriteSafetyResult]] = relationship(back_populates="scan_run")
 
 
 class AudioAsset(Base):
@@ -83,6 +85,8 @@ class FileInstance(Base):
     last_scan_run: Mapped[ScanRun | None] = relationship(back_populates="file_instances")
     metadata_observations: Mapped[list[MetadataObservation]] = relationship(back_populates="file_instance")
     metadata_file_results: Mapped[list[MetadataFileResult]] = relationship(back_populates="file_instance")
+    byte_coverage_results: Mapped[list[ByteCoverageResult]] = relationship(back_populates="file_instance")
+    write_safety_results: Mapped[list[WriteSafetyResult]] = relationship(back_populates="file_instance")
 
 
 class ScanError(Base):
@@ -155,3 +159,60 @@ class MetadataFileResult(Base):
 
     scan_run: Mapped[ScanRun] = relationship(back_populates="metadata_file_results")
     file_instance: Mapped[FileInstance] = relationship(back_populates="metadata_file_results")
+
+
+class ByteCoverageResult(Base):
+    __tablename__ = "byte_coverage_results"
+    __table_args__ = (
+        UniqueConstraint(
+            "scan_run_id",
+            "path",
+            name="uq_byte_coverage_results_scan_run_path",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
+    scan_run_id: Mapped[str] = mapped_column(ForeignKey("scan_runs.id"), nullable=False, index=True)
+    file_instance_id: Mapped[str | None] = mapped_column(ForeignKey("file_instances.id"), index=True)
+    path: Mapped[str] = mapped_column(Text, nullable=False)
+    file_size: Mapped[int | None] = mapped_column(BigInteger)
+    coverage_safety: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    diagnostic_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    diagnostics_by_code: Mapped[dict | None] = mapped_column(json_type)
+    diagnostics_by_severity: Mapped[dict | None] = mapped_column(json_type)
+    region_counts_by_kind: Mapped[dict | None] = mapped_column(json_type)
+    raw_summary: Mapped[dict | None] = mapped_column(json_type)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+
+    scan_run: Mapped[ScanRun] = relationship(back_populates="byte_coverage_results")
+    file_instance: Mapped[FileInstance | None] = relationship(back_populates="byte_coverage_results")
+
+
+class WriteSafetyResult(Base):
+    __tablename__ = "write_safety_results"
+    __table_args__ = (
+        UniqueConstraint(
+            "scan_run_id",
+            "path",
+            name="uq_write_safety_results_scan_run_path",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
+    scan_run_id: Mapped[str] = mapped_column(ForeignKey("scan_runs.id"), nullable=False, index=True)
+    file_instance_id: Mapped[str | None] = mapped_column(ForeignKey("file_instances.id"), index=True)
+    path: Mapped[str] = mapped_column(Text, nullable=False)
+    coverage_safety: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    write_safety: Mapped[str] = mapped_column(String(96), nullable=False, index=True)
+    write_strategy: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    requirements: Mapped[dict | None] = mapped_column(json_type)
+    normalizations: Mapped[list | None] = mapped_column(json_type)
+    blockers: Mapped[list | None] = mapped_column(json_type)
+    diagnostic_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    diagnostics_by_code: Mapped[dict | None] = mapped_column(json_type)
+    diagnostics_by_severity: Mapped[dict | None] = mapped_column(json_type)
+    raw_summary: Mapped[dict | None] = mapped_column(json_type)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+
+    scan_run: Mapped[ScanRun] = relationship(back_populates="write_safety_results")
+    file_instance: Mapped[FileInstance | None] = relationship(back_populates="write_safety_results")

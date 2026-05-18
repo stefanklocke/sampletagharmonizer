@@ -41,6 +41,8 @@ flowchart LR
     db --> file_instances
     db --> metadata_observations
     db --> metadata_file_results
+    db --> byte_coverage_results
+    db --> write_safety_results
     db --> scan_errors
 ```
 
@@ -112,6 +114,8 @@ Synthetic `dataset_path` prefixes identify derived runs:
 | `metadata-observations:` | Extract metadata observations from indexed files |
 | `metadata-retry-errors:` | Re-extract metadata for files from an earlier metadata run's errors |
 | `metadata-resume:` | Continue an interrupted metadata extraction or metadata retry run |
+| `byte-coverage:` | Store compact byte coverage validation results for a dataset |
+| `write-safety:` | Store compact write-safety policy results for a dataset |
 
 ### `scan_errors`
 
@@ -173,6 +177,51 @@ Important fields:
 
 `sth extract-metadata --resume` uses this table to skip files already processed by the interrupted source run.
 
+### `byte_coverage_results`
+
+Stores compact byte coverage validation summaries for dataset-level safety analysis. This table is intentionally an audit layer, not a full byte map store.
+
+Important fields:
+
+| Field | Meaning |
+| --- | --- |
+| `scan_run_id` | Byte coverage run that produced the result |
+| `file_instance_id` | Indexed file instance when the path is known in `file_instances` |
+| `path` | File path that was validated |
+| `file_size` | Physical file size when available |
+| `coverage_safety` | Current coverage-level safety classification |
+| `diagnostic_count` | Number of diagnostics emitted for the file |
+| `diagnostics_by_code` | JSON count of diagnostics by code |
+| `diagnostics_by_severity` | JSON count of diagnostics by severity |
+| `region_counts_by_kind` | JSON count of mapped regions by kind |
+| `raw_summary` | Compact validation summary for audit/debugging |
+
+Full region lists are not stored here. Generate them on demand with `sth byte-map <path>`.
+
+### `write_safety_results`
+
+Stores compact read-only write-safety policy decisions for dataset-level writer readiness analysis. This table does not indicate that files have been modified; it records whether the current policy would allow a future writer to modify them.
+
+Important fields:
+
+| Field | Meaning |
+| --- | --- |
+| `scan_run_id` | Write-safety run that produced the result |
+| `file_instance_id` | Indexed file instance when the path is known in `file_instances` |
+| `path` | File path that was validated |
+| `coverage_safety` | Underlying byte coverage classification |
+| `write_safety` | Policy-level write-safety classification |
+| `write_strategy` | Conservative strategy selected by the policy |
+| `requirements` | JSON map of boolean policy requirements |
+| `normalizations` | JSON list of known tolerances a future writer should normalize |
+| `blockers` | JSON list of policy blockers when the file is not directly writable |
+| `diagnostic_count` | Number of underlying coverage diagnostics |
+| `diagnostics_by_code` | JSON count of underlying coverage diagnostics by code |
+| `diagnostics_by_severity` | JSON count of underlying coverage diagnostics by severity |
+| `raw_summary` | Compact write-safety summary for audit/debugging |
+
+Use this table to inspect writer readiness at scale without rerunning the full byte map validation.
+
 ## Local PostgreSQL
 
 Start only PostgreSQL:
@@ -203,6 +252,8 @@ The schema currently stores enough information to:
 2. Track concrete file paths and filesystem metadata.
 3. Keep per-run status and per-file errors.
 4. Store parser-derived NI metadata observations with byte-location provenance.
-5. Resume interrupted indexing and metadata extraction runs.
+5. Store compact byte coverage validation summaries.
+6. Store compact write-safety policy decisions.
+7. Resume interrupted indexing and metadata extraction runs.
 
 It does not yet include normalized category, taxonomy, confidence, or harmonization tables. Those belong to the next phase after enough observations have been collected and inspected.
