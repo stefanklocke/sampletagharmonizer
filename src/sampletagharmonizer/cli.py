@@ -224,6 +224,23 @@ def write_safety_samples(args: argparse.Namespace) -> int:
     return 0
 
 
+def plan_write(args: argparse.Namespace) -> int:
+    from .writer import plan_existing_id3_geob_update
+
+    try:
+        plan = plan_existing_id3_geob_update(args.source_path, args.output_path)
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from exc
+
+    text = json.dumps(plan.to_dict(), ensure_ascii=False, indent=2 if args.pretty else None)
+    if args.output:
+        args.output.parent.mkdir(parents=True, exist_ok=True)
+        args.output.write_text(text + "\n", encoding="utf-8")
+    else:
+        print(text)
+    return 0
+
+
 def init_db(args: argparse.Namespace) -> int:
     from .db.schema import create_schema
 
@@ -533,6 +550,13 @@ def build_parser() -> argparse.ArgumentParser:
     write_safety_samples_parser.add_argument("--output", type=Path, help="Write JSON report to this file.")
     write_safety_samples_parser.add_argument("--pretty", action="store_true", help="Pretty-print JSON output.")
     write_safety_samples_parser.set_defaults(func=write_safety_samples)
+
+    plan_write_parser = subparsers.add_parser("plan-write", help="Generate a read-only write plan for one WAV file.")
+    plan_write_parser.add_argument("source_path", type=Path, help="Source WAV file to inspect.")
+    plan_write_parser.add_argument("--output-path", type=Path, required=True, help="Planned output WAV path. No file is created.")
+    plan_write_parser.add_argument("--output", type=Path, help="Write JSON plan to this file.")
+    plan_write_parser.add_argument("--pretty", action="store_true", help="Pretty-print JSON output.")
+    plan_write_parser.set_defaults(func=plan_write)
 
     return parser
 
